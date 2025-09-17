@@ -1,0 +1,416 @@
+--// Base UI Library (Game detector removed, decimals fixed)
+
+local library = {}
+
+if game:GetService("CoreGui"):FindFirstChild("LibraryUI") then
+    game:GetService("CoreGui"):FindFirstChild("LibraryUI"):Destroy()
+end
+
+local WinRarUI = Instance.new("ScreenGui")
+WinRarUI.Name = "LibraryUI"
+WinRarUI.Parent = game:GetService("CoreGui")
+WinRarUI.ResetOnSpawn = false
+
+-- toggle with RightShift by default
+game:GetService("UserInputService").InputBegan:Connect(function(I)
+    if I.KeyCode == Enum.KeyCode.RightShift then
+        local LibraryUI = game:GetService("CoreGui"):FindFirstChild("LibraryUI")
+        LibraryUI.Enabled = not LibraryUI.Enabled
+    end
+end)
+
+function library.new(name)
+    local UI = {}
+    local Main = Instance.new("ImageLabel")
+    local Holder = Instance.new("Frame")
+    local UIGradient = Instance.new("UIGradient")
+    local TabHolder = Instance.new("Frame")
+    local UIListLayout = Instance.new("UIListLayout")
+    local UIPadding = Instance.new("UIPadding")
+    local underline = Instance.new("Frame")
+    local UIGradient_2 = Instance.new("UIGradient")
+    local Title = Instance.new("TextLabel")
+    local UIPadding_2 = Instance.new("UIPadding")
+
+    Main.Name = "Main"
+    Main.Parent = WinRarUI
+    Main.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    Main.BackgroundTransparency = 1
+    Main.Position = UDim2.new(0.106, 0, 0.270, 0)
+    Main.Size = UDim2.new(0, 577, 0, 32)
+    Main.Image = "rbxassetid://3570695787"
+    Main.ScaleType = Enum.ScaleType.Slice
+    Main.SliceCenter = Rect.new(100, 100, 100, 100)
+    Main.SliceScale = 0.030
+
+    Holder.Name = "Holder"
+    Holder.Parent = Main
+    Holder.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+    Holder.BackgroundTransparency = 0.080
+    Holder.BorderSizePixel = 0
+    Holder.Position = UDim2.new(0, 0, 1.03125, 0)
+    Holder.Size = UDim2.new(0, 577, 0, 343)
+
+    UIGradient.Color = ColorSequence.new{
+        ColorSequenceKeypoint.new(0.00, Color3.fromRGB(30, 30, 30)),
+        ColorSequenceKeypoint.new(1.00, Color3.fromRGB(26, 26, 26))
+    }
+    UIGradient.Parent = Main
+
+    TabHolder.Name = "TabHolder"
+    TabHolder.Parent = Main
+    TabHolder.BackgroundTransparency = 1
+    TabHolder.Position = UDim2.new(0.211, 0, 0, 0)
+    TabHolder.Size = UDim2.new(0, 455, 0, 32)
+    TabHolder.ZIndex = 2
+
+    UIPadding.Parent = TabHolder
+    UIPadding.PaddingLeft = UDim.new(0, 3)
+    UIPadding.PaddingTop = UDim.new(0, 7)
+
+    UIListLayout.Parent = TabHolder
+    UIListLayout.FillDirection = Enum.FillDirection.Horizontal
+    UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    UIListLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+    UIListLayout.Padding = UDim.new(0, 5)
+
+    underline.Name = "underline"
+    underline.Parent = Main
+    underline.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    underline.BorderSizePixel = 0
+    underline.Position = UDim2.new(0, 0, 0.8125, 0)
+    underline.Size = UDim2.new(0, 577, 0, 7)
+
+    UIGradient_2.Color = ColorSequence.new{
+        ColorSequenceKeypoint.new(0.00, Color3.fromRGB(30, 30, 30)),
+        ColorSequenceKeypoint.new(1.00, Color3.fromRGB(26, 26, 26))
+    }
+    UIGradient_2.Parent = underline
+
+    Title.Name = "Title"
+    Title.Parent = Main
+    Title.BackgroundTransparency = 1
+    Title.Size = UDim2.new(0, 122, 0, 33)
+    Title.ZIndex = 8
+    Title.Font = Enum.Font.SourceSansSemibold
+    Title.Text = name
+    Title.TextColor3 = Color3.fromRGB(252, 252, 252)
+    Title.TextSize = 15
+    Title.TextXAlignment = Enum.TextXAlignment.Left
+
+    UIPadding_2.Parent = Title
+    UIPadding_2.PaddingLeft = UDim.new(0, 6)
+
+    -- draggable
+    local players = game:GetService('Players')
+    local player = players.LocalPlayer
+    local mouse = player:GetMouse()
+    local run = game:GetService('RunService')
+    local stepped = run.Stepped
+
+    local function draggable(obj)
+        spawn(function()
+            obj.Active = true
+            local minitial; local initial; local isdragging
+            obj.InputBegan:Connect(function(input)
+                if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                    isdragging = true
+                    minitial = input.Position
+                    initial = obj.Position
+                    local con
+                    con = stepped:Connect(function()
+                        if isdragging then
+                            local delta = Vector3.new(mouse.X, mouse.Y, 0) - minitial
+                            obj.Position = UDim2.new(initial.X.Scale, initial.X.Offset + delta.X, initial.Y.Scale, initial.Y.Offset + delta.Y)
+                        else
+                            con:Disconnect()
+                        end
+                    end)
+                    input.Changed:Connect(function()
+                        if input.UserInputState == Enum.UserInputState.End then
+                            isdragging = false
+                        end
+                    end)
+                end
+            end)
+        end)
+    end
+    draggable(Main)
+
+    --// TAB
+    function UI.WindowTab(name)
+        local UITabs = {}
+        local Window = Instance.new("TextButton")
+        local Container = Instance.new("Frame")
+        local SideTabs = Instance.new("Frame")
+        local UIPadding = Instance.new("UIPadding")
+        local UIListLayout = Instance.new("UIListLayout")
+
+        Window.Name = name
+        Window.Parent = TabHolder
+        Window.BackgroundTransparency = 0.5
+        Window.Size = UDim2.new(0, 108, 0, 20)
+        Window.ZIndex = 2
+        Window.AutoButtonColor = false
+        Window.Font = Enum.Font.SourceSans
+        Window.Text = name
+        Window.TextColor3 = Color3.fromRGB(240, 240, 240)
+        Window.TextSize = 14
+
+        Container.Name = "Container"
+        Container.Parent = Holder
+        Container.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+        Container.BackgroundTransparency = 0.08
+        Container.Size = UDim2.new(0, 577, 0, 343)
+        Container.Visible = false
+
+        SideTabs.Name = "SideTabs"
+        SideTabs.Parent = Container
+        SideTabs.BackgroundTransparency = 0.7
+        SideTabs.Position = UDim2.new(0, 0, 0, 0)
+        SideTabs.Size = UDim2.new(0, 122, 0, 342)
+        SideTabs.ZIndex = 2
+        SideTabs.Visible = false
+
+        UIPadding.Parent = SideTabs
+        UIPadding.PaddingLeft = UDim.new(0, 6)
+        UIPadding.PaddingTop = UDim.new(0, 5)
+
+        UIListLayout.Parent = SideTabs
+        UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+        UIListLayout.Padding = UDim.new(0, 4)
+
+        Window.MouseButton1Click:Connect(function()
+            for _, v in pairs(Holder:GetChildren()) do
+                if v:IsA("Frame") then v.Visible = false end
+            end
+            for _, v in pairs(TabHolder:GetChildren()) do
+                if v:IsA("TextButton") then
+                    v.BackgroundTransparency = .5
+                    v.Size = UDim2.new(0, 108, 0, 20)
+                    v.TextSize = 14
+                end
+            end
+            Container.Visible = true
+            SideTabs.Visible = true
+            Window.BackgroundTransparency = .32
+            Window.Size = UDim2.new(0, 108, 0, 23)
+            Window.TextSize = 15
+        end)
+
+        --// SIDE TAB
+        function UITabs.SideTab(name)
+            local SideTabUI = {}
+            local TabButton = Instance.new("TextButton")
+            local Frame = Instance.new("Frame")
+            local Tab = Instance.new("ScrollingFrame")
+            local UIListLayout = Instance.new("UIListLayout")
+            local UIPadding = Instance.new("UIPadding")
+
+            TabButton.Name = name
+            TabButton.Parent = SideTabs
+            TabButton.BackgroundTransparency = 1
+            TabButton.Size = UDim2.new(0, 110, 0, 20)
+            TabButton.ZIndex = 2
+            TabButton.Text = name
+            TabButton.Font = Enum.Font.SourceSans
+            TabButton.TextColor3 = Color3.fromRGB(240, 240, 240)
+            TabButton.TextSize = 14
+
+            Frame.Parent = TabButton
+            Frame.BackgroundColor3 = Color3.fromRGB(49, 218, 46)
+            Frame.BorderSizePixel = 0
+            Frame.Size = UDim2.new(0.035, 0, 0, 20)
+            Frame.Visible = false
+
+            Tab.Name = "Tabs"
+            Tab.Parent = Container
+            Tab.Active = true
+            Tab.BackgroundTransparency = 1
+            Tab.Position = UDim2.new(0.216, 0, 0, 0)
+            Tab.Size = UDim2.new(0, 450, 0, 342)
+            Tab.ZIndex = 2
+            Tab.CanvasSize = UDim2.new(0, 0, 3, 0)
+            Tab.ScrollBarThickness = 5
+            Tab.Visible = false
+
+            UIListLayout.Parent = Tab
+            UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+            UIListLayout.Padding = UDim.new(0, 5)
+
+            UIPadding.Parent = Tab
+            UIPadding.PaddingLeft = UDim.new(0, 2)
+            UIPadding.PaddingTop = UDim.new(0, 5)
+
+            TabButton.MouseButton1Click:Connect(function()
+                for _, v in pairs(Container:GetChildren()) do
+                    if v.Name == "Tabs" then v.Visible = false end
+                end
+                for _, v in pairs(SideTabs:GetChildren()) do
+                    if v:IsA("TextButton") then
+                        v.TextSize = 14
+                        v.BackgroundTransparency = 1
+                        v.Frame.Visible = false
+                    end
+                end
+                Tab.Visible = true
+                TabButton.TextSize = 15
+                TabButton.BackgroundTransparency = .5
+                Frame.Visible = true
+            end)
+
+            --// SECTION
+            function SideTabUI.Section(name)
+                local SectionUI = {}
+                local Section = Instance.new("Frame")
+                local SectionTitle = Instance.new("TextLabel")
+                local Underline = Instance.new("ImageLabel")
+
+                Section.Name = name
+                Section.Parent = Tab
+                Section.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
+                Section.BorderSizePixel = 0
+                Section.Size = UDim2.new(0, 438, 0, 200)
+
+                SectionTitle.Parent = Section
+                SectionTitle.BackgroundTransparency = 1
+                SectionTitle.Size = UDim2.new(0, 442, 0, 23)
+                SectionTitle.Font = Enum.Font.SourceSans
+                SectionTitle.Text = name
+                SectionTitle.TextColor3 = Color3.fromRGB(198, 198, 198)
+                SectionTitle.TextSize = 22
+                SectionTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+                local UIPadding = Instance.new("UIPadding")
+                UIPadding.Parent = SectionTitle
+                UIPadding.PaddingLeft = UDim.new(0, 5)
+
+                Underline.Parent = Section
+                Underline.BackgroundTransparency = 1
+                Underline.Position = UDim2.new(0.009, 0, 0.101, 0)
+                Underline.Size = UDim2.new(0, 433, 0, 3)
+                Underline.Image = "rbxassetid://3570695787"
+                Underline.ImageColor3 = Color3.fromRGB(59, 59, 59)
+                Underline.ScaleType = Enum.ScaleType.Slice
+                Underline.SliceCenter = Rect.new(100, 100, 100, 100)
+                Underline.SliceScale = 0.120
+
+                local UIListLayout2 = Instance.new("UIListLayout")
+                UIListLayout2.Parent = Section
+                UIListLayout2.HorizontalAlignment = Enum.HorizontalAlignment.Center
+                UIListLayout2.SortOrder = Enum.SortOrder.LayoutOrder
+                UIListLayout2.Padding = UDim.new(0, 2)
+
+                --// DECIMAL SLIDER PATCH
+                function SectionUI.Slider(label, min, max, default, step, precision, callback)
+                    step = step or 1
+                    precision = precision or 2 -- default to 2 decimals
+
+                    local Holder = Instance.new("Frame")
+                    Holder.Name = "SliderHolder"
+                    Holder.Parent = Section
+                    Holder.Size = UDim2.new(0, 432, 0, 40)
+                    Holder.BackgroundTransparency = 1
+
+                    local Slider = Instance.new("TextButton")
+                    Slider.Parent = Holder
+                    Slider.BackgroundColor3 = Color3.fromRGB(79, 79, 79)
+                    Slider.BorderSizePixel = 0
+                    Slider.Position = UDim2.new(0.019, 0, 0.68, 0)
+                    Slider.Size = UDim2.new(0, 415, 0, 4)
+                    Slider.Text = ""
+
+                    local Fill = Instance.new("Frame")
+                    Fill.Parent = Slider
+                    Fill.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+                    Fill.Size = UDim2.new(0, 0, 0, 4)
+
+                    local ValueSlider = Instance.new("TextLabel")
+                    ValueSlider.Parent = Slider
+                    ValueSlider.BackgroundTransparency = 1
+                    ValueSlider.Position = UDim2.new(-0.019, 0, -6.8, 0)
+                    ValueSlider.Size = UDim2.new(0, 431, 0, 22)
+                    ValueSlider.Font = Enum.Font.SourceSans
+                    ValueSlider.TextColor3 = Color3.fromRGB(198, 198, 198)
+                    ValueSlider.TextSize = 14
+
+                    local SliderText = Instance.new("TextLabel")
+                    SliderText.Parent = Holder
+                    SliderText.BackgroundTransparency = 1
+                    SliderText.Position = UDim2.new(0.019, 0, 0, 0)
+                    SliderText.Size = UDim2.new(0, 415, 0, 22)
+                    SliderText.Font = Enum.Font.SourceSans
+                    SliderText.Text = label
+                    SliderText.TextColor3 = Color3.fromRGB(198, 198, 198)
+                    SliderText.TextSize = 16
+                    SliderText.TextXAlignment = Enum.TextXAlignment.Left
+
+                    local SetSlider = Instance.new("TextBox")
+                    SetSlider.Parent = Holder
+                    SetSlider.BackgroundTransparency = 1
+                    SetSlider.Position = UDim2.new(0.858, 0, 0.05, 0)
+                    SetSlider.Size = UDim2.new(0, 51, 0, 16)
+                    SetSlider.Font = Enum.Font.SourceSans
+                    SetSlider.PlaceholderText = "Number"
+                    SetSlider.TextColor3 = Color3.fromRGB(178, 178, 178)
+                    SetSlider.TextSize = 14
+                    SetSlider.TextXAlignment = Enum.TextXAlignment.Right
+
+                    local function roundTo(v)
+                        return math.clamp(math.floor(v/step + 0.5) * step, min, max)
+                    end
+                    local function formatValue(v)
+                        return string.format("%."..precision.."f", v)
+                    end
+                    local function setValue(val)
+                        val = roundTo(val)
+                        local pct = (val - min) / (max - min)
+                        Fill.Size = UDim2.new(pct, 0, 0, 4)
+                        ValueSlider.Text = formatValue(val) .. " / " .. formatValue(max)
+                        SetSlider.Text = formatValue(val)
+                        if callback then pcall(callback, val) end
+                    end
+
+                    -- drag logic
+                    local conn
+                    local UIS = game:GetService("UserInputService")
+                    local RunService = game:GetService("RunService")
+
+                    UIS.InputEnded:Connect(function(inp)
+                        if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+                            if conn then conn:Disconnect(); conn = nil end
+                        end
+                    end)
+
+                    Slider.MouseButton1Down:Connect(function()
+                        if conn then conn:Disconnect() end
+                        conn = RunService.Stepped:Connect(function()
+                            local m = UIS:GetMouseLocation()
+                            local pct = math.clamp((m.X - Slider.AbsolutePosition.X) / (Slider.AbsoluteSize.X), 0, 1)
+                            local val = min + (max - min) * pct
+                            setValue(val)
+                        end)
+                    end)
+
+                    SetSlider.FocusLost:Connect(function(enter)
+                        if not enter then return end
+                        local v = tonumber(SetSlider.Text)
+                        if v then setValue(v) else SetSlider.Text = "" end
+                    end)
+
+                    setValue(default or min)
+                end
+
+                return SectionUI
+            end
+
+            return SideTabUI
+        end
+
+        return UITabs
+    end
+
+    return UI
+end
+
+return library
