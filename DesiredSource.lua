@@ -895,44 +895,70 @@ function Library:CreateMain(Options)
 
 					table.insert(Objects.TextColor, Interactables.KeyBindKey)
 
-					local connection
-					local changing
-					local bind
-					local inputconnection
-					local checkconnection
+					local changing = false
+					local bind = nil
+					local connection = nil
 
-					if Options then
-						if Options.default then 
-							bind = Options.default
-							Interactables.KeyBindKey.Text = bind.Name
-						end
+					if Options and Options.default then 
+						bind = Options.default
+						Interactables.KeyBindKey.Text = bind.Name
 					end
 
 					Interactables.KeyBindButton.MouseButton1Click:Connect(function()
 						changing = true
 						Interactables.KeyBindKey.Text = "..."
-						connection = game:GetService("UserInputService").InputBegan:Connect(function(i)
-							if i.UserInputType.Name == "Keyboard" and i.KeyCode ~= Enum.KeyCode.Backspace then
-								Interactables.KeyBindKey.Text = i.KeyCode.Name
-								bind = i.KeyCode
-								if connection then
-									connection:Disconnect()
-									connection = nil
-									wait(.1)
-									changing = false
-								end
-							elseif i.KeyCode == Enum.KeyCode.Backspace then
+
+						local CAS = game:GetService("ContextActionService")
+						CAS:BindAction("BlockEscapeBind", function(_, state, obj)
+							if obj.KeyCode == Enum.KeyCode.Escape then
+								return Enum.ContextActionResult.Sink
+							end
+							return Enum.ContextActionResult.Pass
+						end, false, Enum.KeyCode.Escape)
+
+						connection = game:GetService("UserInputService").InputBegan:Connect(function(i, gp)
+							if gp then return end
+
+							if i.KeyCode == Enum.KeyCode.Escape then
 								Interactables.KeyBindKey.Text = "None"
 								bind = nil
-								if connection then
-									connection:Disconnect()
-									connection = nil 
-									wait(.1)
-									changing = false
-								end
+								if connection then connection:Disconnect() connection = nil end
+								CAS:UnbindAction("BlockEscapeBind")
+								changing = false
+								return
+							end
+
+							if i.UserInputType == Enum.UserInputType.Keyboard and i.KeyCode ~= Enum.KeyCode.Backspace then
+								Interactables.KeyBindKey.Text = i.KeyCode.Name
+								bind = i.KeyCode
+								if connection then connection:Disconnect() connection = nil end
+								CAS:UnbindAction("BlockEscapeBind")
+								changing = false
+								wait(0.1)
 							end
 						end)
 					end)
+
+					-- Actual key press listener (added because original was truncated)
+					game:GetService("UserInputService").InputBegan:Connect(function(i, gp)
+						if gp or changing or not bind then return end
+						if i.KeyCode == bind and CallBack then
+							CallBack()
+						end
+					end)
+
+					Section.Container.Size = Section.Container.Size + UDim2.new(0, 0, 0, 45)
+					Category.Container.CanvasSize = Category.Container.CanvasSize + UDim2.new(0, 0, 0, 45)
+
+					Interactables.KeyBindBox.Parent = Section.Container
+					Interactables.KeyBindName.Parent = Interactables.KeyBindBox
+					Interactables.KeyBindButton.Parent = Interactables.KeyBindBox
+					Interactables.KeyBindKey.Parent = Interactables.KeyBindButton
+
+					-- Expose bind for easy access in main script
+					Interactables.GetCurrentBind = function()
+						return bind
+					end
 
 					inputconnection = game:GetService("UserInputService").InputBegan:Connect(function(i, GPE)
 						if bind and i.KeyCode == bind and not GPE and not connection then
