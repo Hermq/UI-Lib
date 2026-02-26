@@ -83,8 +83,10 @@ end
 
 local Discord = Instance.new("ScreenGui")
 Discord.Name = "Discord"
-Discord.Parent = game.CoreGui
+Discord.ResetOnSpawn = false
+Discord.DisplayOrder = -1
 Discord.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+Discord.Parent = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
 
 function DiscordLib:Window(text)
 	local currentservertoggled = ""
@@ -2295,9 +2297,20 @@ function DiscordLib:Window(text)
 				ChannelHolder.CanvasSize = UDim2.new(0,0,0,ChannelHolderLayout.AbsoluteContentSize.Y)
 				return {
 					Remove = function() Toggle:Destroy(); ChannelHolder.CanvasSize = UDim2.new(0,0,0,ChannelHolderLayout.AbsoluteContentSize.Y) end,
-					SetState = function(_, state)
-						toggled = not state -- flip so the click handler toggles it correctly
-						Toggle.MouseButton1Click:Fire() -- simulate a click to apply state
+					SetState = function(_, newState)
+						if newState == toggled then return end
+						toggled = newState
+						if newState then
+							TweenService:Create(Icon, TweenInfo.new(.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {ImageColor3 = Color3.fromRGB(67,181,129)}):Play()
+							TweenService:Create(ToggleFrame, TweenInfo.new(.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {BackgroundColor3 = Color3.fromRGB(67,181,129)}):Play()
+							ToggleFrameCircle:TweenPosition(UDim2.new(0.655, -5, 0.133000001, 0), Enum.EasingDirection.Out, Enum.EasingStyle.Quart, .3, true)
+							Icon.Image = "http://www.roblox.com/asset/?id=6023426926"
+						else
+							TweenService:Create(Icon, TweenInfo.new(.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {ImageColor3 = Color3.fromRGB(114, 118, 125)}):Play()
+							TweenService:Create(ToggleFrame, TweenInfo.new(.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {BackgroundColor3 = Color3.fromRGB(114, 118, 125)}):Play()
+							ToggleFrameCircle:TweenPosition(UDim2.new(0.234999999, -5, 0.133000001, 0), Enum.EasingDirection.Out, Enum.EasingStyle.Quart, .3, true)
+							Icon.Image = "http://www.roblox.com/asset/?id=6035047409"
+						end
 					end
 				}
 			end
