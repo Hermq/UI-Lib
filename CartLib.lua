@@ -477,17 +477,7 @@ function NexusLib:CreateWindow(options)
     makeCorner(mainFrame, 12)
     makeStroke(mainFrame, T.Border, 1)
 
-    -- Drop shadow
-    local shadow = newInstance("ImageLabel", {
-        Name             = "Shadow",
-        Size             = UDim2.new(1, 30, 1, 30),
-        Position         = UDim2.new(0, -15, 0, -10),
-        BackgroundTransparency = 1,
-        Image            = "rbxassetid://6015897843",
-        ImageColor3      = T.Shadow,
-        ImageTransparency = 0.5,
-        ZIndex           = 0,
-    }, mainFrame)
+    -- (shadow removed: was inside ClipsDescendants frame causing corner artifacts)
 
     -- ── Title Bar ────────────────────────────────────────────
     local titleBar = newInstance("Frame", {
@@ -545,8 +535,8 @@ function NexusLib:CreateWindow(options)
         return b
     end
 
-    local closeBtn    = makeWinBtn(-10,  T.Danger,      "×")
-    local minimizeBtn = makeWinBtn(-44,  T.ElementBg,   "−")
+    local closeBtn    = makeWinBtn(-38,  T.Danger,      "×")
+    local minimizeBtn = makeWinBtn(-72,  T.ElementBg,   "−")
 
     -- ── Content Area ─────────────────────────────────────────
     local contentFrame = newInstance("Frame", {
@@ -659,6 +649,14 @@ function NexusLib:CreateWindow(options)
 
     function Window:SetStatus(text)
         statusLabel.Text = tostring(text)
+    end
+
+    function Window:SetVisible(state)
+        mainFrame.Visible = state
+    end
+
+    function Window:ToggleVisible()
+        mainFrame.Visible = not mainFrame.Visible
     end
 
     -- ── TAB CREATION ──────────────────────────────────────────
@@ -1093,7 +1091,7 @@ function NexusLib:CreateWindow(options)
 
                 local selected = multi and {} or nil
 
-                local h = desc and 60 or 44
+                local h = desc and 76 or 58
                 local container = newInstance("Frame", {
                     Size             = UDim2.new(1, 0, 0, h),
                     BackgroundColor3 = T4.ElementBg,
@@ -1127,10 +1125,11 @@ function NexusLib:CreateWindow(options)
                     }, container)
                 end
 
-                -- Dropdown button
+                -- Dropdown button (positioned below label/desc with 6px gap)
+                local dropBtnY = desc and 44 or 28
                 local dropBtn = newInstance("TextButton", {
                     Size             = UDim2.new(1, -20, 0, 26),
-                    Position         = UDim2.new(0, 10, 1, -32),
+                    Position         = UDim2.fromOffset(10, dropBtnY),
                     BackgroundColor3 = T4.TertiaryBg,
                     Text             = defText,
                     TextColor3       = T4.TextSecondary,
@@ -1254,15 +1253,23 @@ function NexusLib:CreateWindow(options)
                     end
                 end)
 
-                -- Close on outside click
+                -- Close on outside click.
+                -- IMPORTANT: also exclude the dropBtn area so that clicking the
+                -- button while open only fires MouseButton1Click (which toggles),
+                -- not both (which would close-then-reopen, leaving it open).
                 UserInputService.InputBegan:Connect(function(inp)
                     if inp.UserInputType == Enum.UserInputType.MouseButton1 then
                         if open then
-                            local mPos = inp.Position
-                            local mAbs = menuFrame.AbsolutePosition
-                            local mSz  = menuFrame.AbsoluteSize
-                            if not (mPos.X >= mAbs.X and mPos.X <= mAbs.X + mSz.X
-                                and mPos.Y >= mAbs.Y and mPos.Y <= mAbs.Y + mSz.Y) then
+                            local mPos  = inp.Position
+                            local mAbs  = menuFrame.AbsolutePosition
+                            local mSz   = menuFrame.AbsoluteSize
+                            local dbAbs = dropBtn.AbsolutePosition
+                            local dbSz  = dropBtn.AbsoluteSize
+                            local inMenu = mPos.X >= mAbs.X and mPos.X <= mAbs.X + mSz.X
+                                       and mPos.Y >= mAbs.Y and mPos.Y <= mAbs.Y + mSz.Y
+                            local inBtn  = mPos.X >= dbAbs.X and mPos.X <= dbAbs.X + dbSz.X
+                                       and mPos.Y >= dbAbs.Y and mPos.Y <= dbAbs.Y + dbSz.Y
+                            if not inMenu and not inBtn then
                                 open = false
                                 menuFrame.Visible = false
                                 tween(chevron, {Rotation = 0}, 0.1):Play()
@@ -1701,19 +1708,23 @@ function NexusLib:CreateWindow(options)
             -- ─────────────────────────────────────────────────
             -- LABEL
             -- ─────────────────────────────────────────────────
-            function Section:AddLabel(text)
-                local T4 = self._theme
+            function Section:AddLabel(options)
+                local T4  = self._theme
+                -- Accept either a plain string or a {Text = "..."} table
+                local str = type(options) == "table" and (options.Text or "") or tostring(options)
                 local lbl = newInstance("TextLabel", {
-                    Size             = UDim2.new(1, 0, 0, 24),
+                    Size             = UDim2.new(1, 0, 0, 0),
+                    AutomaticSize    = Enum.AutomaticSize.Y,
                     BackgroundTransparency = 1,
-                    Text             = tostring(text),
+                    Text             = str,
                     TextColor3       = T4.TextSecondary,
                     Font             = Enum.Font.Gotham,
                     TextSize         = 12,
                     TextXAlignment   = Enum.TextXAlignment.Left,
+                    TextWrapped      = true,
                     LayoutOrder      = nextOrder(),
                 }, secFrame)
-                makePadding(lbl, 0, 0, 10, 0)
+                makePadding(lbl, 2, 2, 10, 4)
 
                 local LblObj = {}
                 function LblObj:Set(t) lbl.Text = tostring(t) end
