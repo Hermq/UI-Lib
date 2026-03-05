@@ -477,7 +477,17 @@ function NexusLib:CreateWindow(options)
     makeCorner(mainFrame, 12)
     makeStroke(mainFrame, T.Border, 1)
 
-    -- (shadow removed: was inside ClipsDescendants frame causing corner artifacts)
+    -- Drop shadow
+    local shadow = newInstance("ImageLabel", {
+        Name             = "Shadow",
+        Size             = UDim2.new(1, 30, 1, 30),
+        Position         = UDim2.new(0, -15, 0, -10),
+        BackgroundTransparency = 1,
+        Image            = "rbxassetid://6015897843",
+        ImageColor3      = T.Shadow,
+        ImageTransparency = 0.5,
+        ZIndex           = 0,
+    }, mainFrame)
 
     -- ── Title Bar ────────────────────────────────────────────
     local titleBar = newInstance("Frame", {
@@ -535,8 +545,8 @@ function NexusLib:CreateWindow(options)
         return b
     end
 
-    local closeBtn    = makeWinBtn(-38,  T.Danger,      "×")
-    local minimizeBtn = makeWinBtn(-72,  T.ElementBg,   "−")
+    local closeBtn    = makeWinBtn(-10,  T.Danger,      "×")
+    local minimizeBtn = makeWinBtn(-44,  T.ElementBg,   "−")
 
     -- ── Content Area ─────────────────────────────────────────
     local contentFrame = newInstance("Frame", {
@@ -649,14 +659,6 @@ function NexusLib:CreateWindow(options)
 
     function Window:SetStatus(text)
         statusLabel.Text = tostring(text)
-    end
-
-    function Window:SetVisible(state)
-        mainFrame.Visible = state
-    end
-
-    function Window:ToggleVisible()
-        mainFrame.Visible = not mainFrame.Visible
     end
 
     -- ── TAB CREATION ──────────────────────────────────────────
@@ -984,16 +986,48 @@ function NexusLib:CreateWindow(options)
                     TextXAlignment   = Enum.TextXAlignment.Left,
                 }, row)
 
-                local valLabel = newInstance("TextLabel", {
-                    Size             = UDim2.new(0.4, -10, 0, 18),
-                    Position         = UDim2.new(0.6, 0, 0, 8),
+                -- Value display is a TextBox so the user can click and type a
+                -- custom number (including values outside the slider Min/Max).
+                local valLabel = newInstance("TextBox", {
+                    Size              = UDim2.new(0.4, -10, 0, 18),
+                    Position          = UDim2.new(0.6, 0, 0, 8),
                     BackgroundTransparency = 1,
-                    Text             = string.format("%." .. prec .. "f", value) .. suf,
-                    TextColor3       = T4.Accent,
-                    Font             = Enum.Font.GothamBold,
-                    TextSize         = 13,
-                    TextXAlignment   = Enum.TextXAlignment.Right,
+                    Text              = string.format("%." .. prec .. "f", value) .. suf,
+                    TextColor3        = T4.Accent,
+                    Font              = Enum.Font.GothamBold,
+                    TextSize          = 13,
+                    TextXAlignment    = Enum.TextXAlignment.Right,
+                    BorderSizePixel   = 0,
+                    ClearTextOnFocus  = true,
+                    PlaceholderText   = "value",
+                    PlaceholderColor3 = T4.TextDim,
                 }, row)
+
+                valLabel.Focused:Connect(function()
+                    tween(valLabel, {TextColor3 = T4.TextPrimary}, 0.1):Play()
+                    valLabel.Text = tostring(value)  -- strip suffix while editing
+                end)
+                valLabel.FocusLost:Connect(function(enterPressed)
+                    local n = tonumber(valLabel.Text)
+                    if n and n > 0 then
+                        -- Allow any positive value; visuals clamp, emitted value does not
+                        local visualV = math.clamp(n, min, max)
+                        local fmt = "%." .. prec .. "f"
+                        if prec == 0 then visualV = math.floor(visualV + 0.5) end
+                        local p = (visualV - min) / (max - min)
+                        fill.Size      = UDim2.new(p, 0, 1, 0)
+                        thumb.Position = UDim2.new(p, -7, 0.5, -7)
+                        value = n  -- store raw typed value (may exceed max)
+                        if flag then NexusLib.Flags[flag] = value end
+                        cb(value)
+                    end
+                    -- Always show formatted value + suffix after editing
+                    local fmt = "%." .. prec .. "f"
+                    local display = tonumber(valLabel.Text)
+                    valLabel.Text = display and (string.format(fmt, display) .. suf)
+                                    or (string.format(fmt, value) .. suf)
+                    tween(valLabel, {TextColor3 = T4.Accent}, 0.1):Play()
+                end)
 
                 -- Track
                 local track = newInstance("Frame", {
@@ -1091,7 +1125,7 @@ function NexusLib:CreateWindow(options)
 
                 local selected = multi and {} or nil
 
-                local h = desc and 76 or 58
+                local h = desc and 60 or 44
                 local container = newInstance("Frame", {
                     Size             = UDim2.new(1, 0, 0, h),
                     BackgroundColor3 = T4.ElementBg,
@@ -1125,11 +1159,10 @@ function NexusLib:CreateWindow(options)
                     }, container)
                 end
 
-                -- Dropdown button (positioned below label/desc with 6px gap)
-                local dropBtnY = desc and 44 or 28
+                -- Dropdown button
                 local dropBtn = newInstance("TextButton", {
                     Size             = UDim2.new(1, -20, 0, 26),
-                    Position         = UDim2.fromOffset(10, dropBtnY),
+                    Position         = UDim2.new(0, 10, 1, -32),
                     BackgroundColor3 = T4.TertiaryBg,
                     Text             = defText,
                     TextColor3       = T4.TextSecondary,
@@ -1253,23 +1286,15 @@ function NexusLib:CreateWindow(options)
                     end
                 end)
 
-                -- Close on outside click.
-                -- IMPORTANT: also exclude the dropBtn area so that clicking the
-                -- button while open only fires MouseButton1Click (which toggles),
-                -- not both (which would close-then-reopen, leaving it open).
+                -- Close on outside click
                 UserInputService.InputBegan:Connect(function(inp)
                     if inp.UserInputType == Enum.UserInputType.MouseButton1 then
                         if open then
-                            local mPos  = inp.Position
-                            local mAbs  = menuFrame.AbsolutePosition
-                            local mSz   = menuFrame.AbsoluteSize
-                            local dbAbs = dropBtn.AbsolutePosition
-                            local dbSz  = dropBtn.AbsoluteSize
-                            local inMenu = mPos.X >= mAbs.X and mPos.X <= mAbs.X + mSz.X
-                                       and mPos.Y >= mAbs.Y and mPos.Y <= mAbs.Y + mSz.Y
-                            local inBtn  = mPos.X >= dbAbs.X and mPos.X <= dbAbs.X + dbSz.X
-                                       and mPos.Y >= dbAbs.Y and mPos.Y <= dbAbs.Y + dbSz.Y
-                            if not inMenu and not inBtn then
+                            local mPos = inp.Position
+                            local mAbs = menuFrame.AbsolutePosition
+                            local mSz  = menuFrame.AbsoluteSize
+                            if not (mPos.X >= mAbs.X and mPos.X <= mAbs.X + mSz.X
+                                and mPos.Y >= mAbs.Y and mPos.Y <= mAbs.Y + mSz.Y) then
                                 open = false
                                 menuFrame.Visible = false
                                 tween(chevron, {Rotation = 0}, 0.1):Play()
@@ -1322,8 +1347,10 @@ function NexusLib:CreateWindow(options)
                 local cb    = options.Callback    or function() end
                 local live  = options.LiveUpdate  or false
 
+                -- With desc: Name(y=6,h=18) + Desc(y=26,h=14) + gap + Input(y=46,h=24) = 76px total
+                -- Without:  Name(y=6,h=18) + Input(y=26,h=24) = 56px total (was 48, +8 for padding)
                 local row = newInstance("Frame", {
-                    Size             = UDim2.new(1, 0, 0, desc and 62 or 48),
+                    Size             = UDim2.new(1, 0, 0, desc and 76 or 56),
                     BackgroundColor3 = T4.ElementBg,
                     BorderSizePixel  = 0,
                     LayoutOrder      = nextOrder(),
@@ -1344,7 +1371,7 @@ function NexusLib:CreateWindow(options)
                 if desc then
                     newInstance("TextLabel", {
                         Size             = UDim2.new(1, -12, 0, 14),
-                        Position         = UDim2.fromOffset(10, 24),
+                        Position         = UDim2.fromOffset(10, 26),
                         BackgroundTransparency = 1,
                         Text             = desc,
                         TextColor3       = T4.TextDim,
@@ -1354,9 +1381,11 @@ function NexusLib:CreateWindow(options)
                     }, row)
                 end
 
+                -- Input box sits at a fixed absolute y so it never overlaps text above
+                local inputY = desc and 46 or 26
                 local box = newInstance("TextBox", {
                     Size             = UDim2.new(1, -20, 0, 24),
-                    Position         = UDim2.new(0, 10, 1, -30),
+                    Position         = UDim2.fromOffset(10, inputY),
                     BackgroundColor3 = T4.TertiaryBg,
                     Text             = "",
                     PlaceholderText  = ph,
@@ -1450,14 +1479,18 @@ function NexusLib:CreateWindow(options)
 
                 local blacklist = {
                     Enum.KeyCode.Unknown, Enum.KeyCode.W, Enum.KeyCode.A,
-                    Enum.KeyCode.S, Enum.KeyCode.D, Enum.KeyCode.Escape
+                    Enum.KeyCode.S, Enum.KeyCode.D,
+                    -- Note: Escape is NOT blacklisted — it sets the binding to None
                 }
                 UserInputService.InputBegan:Connect(function(inp, gp)
                     if not setting then return end
                     if inp.KeyCode == Enum.KeyCode.Escape then
-                        setting = false
-                        kbBtn.Text = current and current.Name or "None"
+                        -- Escape clears the binding to None
+                        current = nil
+                        if flag then NexusLib.Flags[flag] = nil end
+                        kbBtn.Text = "None"
                         tween(kbBtn, {BackgroundColor3 = T4.TertiaryBg}, 0.1):Play()
+                        setting = false
                         return
                     end
                     if table.find(blacklist, inp.KeyCode) then return end
@@ -1708,23 +1741,19 @@ function NexusLib:CreateWindow(options)
             -- ─────────────────────────────────────────────────
             -- LABEL
             -- ─────────────────────────────────────────────────
-            function Section:AddLabel(options)
-                local T4  = self._theme
-                -- Accept either a plain string or a {Text = "..."} table
-                local str = type(options) == "table" and (options.Text or "") or tostring(options)
+            function Section:AddLabel(text)
+                local T4 = self._theme
                 local lbl = newInstance("TextLabel", {
-                    Size             = UDim2.new(1, 0, 0, 0),
-                    AutomaticSize    = Enum.AutomaticSize.Y,
+                    Size             = UDim2.new(1, 0, 0, 24),
                     BackgroundTransparency = 1,
-                    Text             = str,
+                    Text             = tostring(text),
                     TextColor3       = T4.TextSecondary,
                     Font             = Enum.Font.Gotham,
                     TextSize         = 12,
                     TextXAlignment   = Enum.TextXAlignment.Left,
-                    TextWrapped      = true,
                     LayoutOrder      = nextOrder(),
                 }, secFrame)
-                makePadding(lbl, 2, 2, 10, 4)
+                makePadding(lbl, 0, 0, 10, 0)
 
                 local LblObj = {}
                 function LblObj:Set(t) lbl.Text = tostring(t) end
