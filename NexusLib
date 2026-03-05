@@ -1,0 +1,629 @@
+-- ============================================================
+--  NexusLib  |  Dark Modern Roblox UI Library
+--  Fixes: minimize button, UI clipping, slider TextBox,
+--         Escape → "None" keybind, textbox desc overlap
+-- ============================================================
+
+local NexusLib   = {}
+NexusLib.Flags   = {}
+NexusLib.Options = {}
+NexusLib.Connections = {}
+NexusLib.FolderName  = "NexusLib_Configs"
+
+-- ── Services ──────────────────────────────────────────────
+local TweenService     = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local Players          = game:GetService("Players")
+local LocalPlayer      = Players.LocalPlayer
+
+-- ── Themes ────────────────────────────────────────────────
+NexusLib.Themes = {
+    Dark = {
+        Background    = Color3.fromRGB(18, 18, 22),
+        SecondaryBg   = Color3.fromRGB(26, 26, 32),
+        TertiaryBg    = Color3.fromRGB(34, 34, 42),
+        ElementBg     = Color3.fromRGB(44, 44, 54),
+        ElementHover  = Color3.fromRGB(60, 60, 74),
+        Accent        = Color3.fromRGB(90, 160, 255),
+        AccentHover   = Color3.fromRGB(110, 180, 255),
+        TextPrimary   = Color3.fromRGB(240, 240, 245),
+        TextSecondary = Color3.fromRGB(160, 160, 175),
+        TextDim       = Color3.fromRGB(100, 100, 115),
+        Success       = Color3.fromRGB(80, 200, 120),
+        Danger        = Color3.fromRGB(210, 65, 65),
+        Warning       = Color3.fromRGB(220, 160, 50),
+        ScrollBar     = Color3.fromRGB(55, 55, 68),
+        Border        = Color3.fromRGB(55, 55, 68),
+        ToggleOn      = Color3.fromRGB(90, 160, 255),
+        ToggleOff     = Color3.fromRGB(44, 44, 54),
+    },
+    Ocean = {
+        Background    = Color3.fromRGB(10, 20, 35),
+        SecondaryBg   = Color3.fromRGB(14, 28, 48),
+        TertiaryBg    = Color3.fromRGB(18, 38, 62),
+        ElementBg     = Color3.fromRGB(22, 48, 78),
+        ElementHover  = Color3.fromRGB(28, 60, 96),
+        Accent        = Color3.fromRGB(0, 200, 220),
+        AccentHover   = Color3.fromRGB(20, 220, 240),
+        TextPrimary   = Color3.fromRGB(220, 240, 255),
+        TextSecondary = Color3.fromRGB(130, 170, 200),
+        TextDim       = Color3.fromRGB(70, 100, 130),
+        Success       = Color3.fromRGB(60, 200, 140),
+        Danger        = Color3.fromRGB(200, 60, 80),
+        Warning       = Color3.fromRGB(210, 160, 40),
+        ScrollBar     = Color3.fromRGB(30, 60, 90),
+        Border        = Color3.fromRGB(30, 60, 90),
+        ToggleOn      = Color3.fromRGB(0, 200, 220),
+        ToggleOff     = Color3.fromRGB(22, 48, 78),
+    },
+}
+
+-- ── Helpers ───────────────────────────────────────────────
+local function Tween(obj, props, t, style, dir)
+    pcall(function()
+        TweenService:Create(
+            obj,
+            TweenInfo.new(t or 0.15, style or Enum.EasingStyle.Quad, dir or Enum.EasingDirection.Out),
+            props
+        ):Play()
+    end)
+end
+
+local function AddConn(conn)
+    table.insert(NexusLib.Connections, conn)
+    return conn
+end
+
+local function MakeCorner(parent, r)
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, r or 8)
+    c.Parent = parent
+    return c
+end
+
+local function MakeFrame(p)
+    local f = Instance.new("Frame")
+    f.BorderSizePixel = 0
+    for k, v in pairs(p) do pcall(function() f[k] = v end) end
+    return f
+end
+
+local function MakeLabel(p)
+    local l = Instance.new("TextLabel")
+    l.BackgroundTransparency = 1
+    l.BorderSizePixel = 0
+    l.Font = Enum.Font.Gotham
+    for k, v in pairs(p) do pcall(function() l[k] = v end) end
+    return l
+end
+
+-- ── ScreenGui ─────────────────────────────────────────────
+if getgenv and getgenv()._NexusLibInstance then
+    pcall(function() getgenv()._NexusLibInstance:Destroy() end)
+end
+
+local gui = Instance.new("ScreenGui")
+gui.Name           = "NexusLib"
+gui.ResetOnSpawn   = false
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui.IgnoreGuiInset = true
+gui.DisplayOrder   = 999
+
+local ok = pcall(function()
+    if syn and syn.protect_gui then syn.protect_gui(gui) end
+    gui.Parent = game:GetService("CoreGui")
+end)
+if not ok then
+    pcall(function()
+        if gethui then gui.Parent = gethui()
+        else gui.Parent = LocalPlayer:WaitForChild("PlayerGui") end
+    end)
+end
+
+NexusLib._gui = gui
+if getgenv then getgenv()._NexusLibInstance = NexusLib end
+
+-- ── Library Methods ───────────────────────────────────────
+function NexusLib:Destroy()
+    if self._gui and self._gui.Parent then self._gui:Destroy() end
+    for _, c in pairs(self.Connections) do
+        if typeof(c) == "RBXScriptConnection" then pcall(function() c:Disconnect() end) end
+    end
+    self.Connections = {}
+    self.Flags  = {}
+    self.Options = {}
+    if getgenv then getgenv()._NexusLibInstance = nil end
+end
+
+function NexusLib:SetTheme(t)
+    self._theme = type(t) == "string" and (self.Themes[t] or self.Themes.Dark) or t
+end
+NexusLib:SetTheme("Dark")
+
+-- ── Notify ────────────────────────────────────────────────
+function NexusLib:Notify(opts)
+    local th = self._theme
+    local title    = opts.Title    or "Notice"
+    local text     = opts.Text     or ""
+    local duration = opts.Duration or 4
+    local nType    = opts.Type     or "Info"
+
+    local accentClr = th.Accent
+    if nType == "Success" then accentClr = th.Success
+    elseif nType == "Danger"  then accentClr = th.Danger
+    elseif nType == "Warning" then accentClr = th.Warning end
+
+    local offset = 0
+    for _, ch in ipairs(gui:GetChildren()) do
+        if ch.Name == "NexusNotif" then offset = offset + 76 end
+    end
+
+    local notif = MakeFrame({
+        Name             = "NexusNotif",
+        Size             = UDim2.new(0, 280, 0, 66),
+        Position         = UDim2.new(1, 10, 1, -(76 + offset)),
+        BackgroundColor3 = th.SecondaryBg,
+        ZIndex           = 200,
+        Parent           = gui,
+    })
+    MakeCorner(notif, 8)
+    local stripe = MakeFrame({ Size = UDim2.new(0, 3, 1, 0), BackgroundColor3 = accentClr, ZIndex = 201, Parent = notif })
+    MakeCorner(stripe, 3)
+    MakeLabel({ Size = UDim2.new(1, -20, 0, 20), Position = UDim2.new(0, 12, 0, 8), Text = title, Font = Enum.Font.GothamBold, TextSize = 13, TextColor3 = th.TextPrimary, TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 202, Parent = notif })
+    MakeLabel({ Size = UDim2.new(1, -20, 0, 30), Position = UDim2.new(0, 12, 0, 28), Text = text, TextSize = 12, TextColor3 = th.TextSecondary, TextXAlignment = Enum.TextXAlignment.Left, TextWrapped = true, ZIndex = 202, Parent = notif })
+    local bar = MakeFrame({ Size = UDim2.new(1, 0, 0, 2), Position = UDim2.new(0, 0, 1, -2), BackgroundColor3 = accentClr, ZIndex = 202, Parent = notif })
+
+    Tween(notif, { Position = UDim2.new(1, -290, 1, -(76 + offset)) }, 0.3)
+    Tween(bar,   { Size = UDim2.new(0, 0, 0, 2) }, duration, Enum.EasingStyle.Linear)
+    task.delay(duration, function()
+        Tween(notif, { Position = UDim2.new(1, 10, 1, -(76 + offset)) }, 0.3)
+        task.delay(0.35, function()
+            notif:Destroy()
+            if opts.Callback then opts.Callback() end
+        end)
+    end)
+end
+
+-- ── CreateWindow ──────────────────────────────────────────
+function NexusLib:CreateWindow(opts)
+    local theme = opts.Theme
+    if type(theme) == "string" then theme = self.Themes[theme] or self._theme
+    elseif type(theme) ~= "table" then theme = self._theme end
+
+    local winName = opts.Name or "Script"
+    local winW    = (opts.Size and opts.Size.X) or 580
+    local winH    = (opts.Size and opts.Size.Y) or 400
+    local TBAR    = 40
+    local TABW    = 130
+
+    -- ── Main frame ──────────────────────────────────────
+    local mainFrame = MakeFrame({
+        Name             = "NexusWindow",
+        Size             = UDim2.new(0, winW, 0, winH),
+        Position         = UDim2.new(0.5, -winW/2, 0.5, -winH/2),
+        BackgroundColor3 = theme.Background,
+        ZIndex           = 10,
+        ClipsDescendants = false,  -- don't clip the window itself
+        Parent           = gui,
+    })
+    MakeCorner(mainFrame, 10)
+
+    -- ── Title bar ───────────────────────────────────────
+    local tbar = MakeFrame({ Name = "TitleBar", Size = UDim2.new(1, 0, 0, TBAR), BackgroundColor3 = theme.SecondaryBg, ZIndex = 11, Parent = mainFrame })
+    MakeCorner(tbar, 10)
+    -- Cover bottom rounded corners of titlebar
+    MakeFrame({ Size = UDim2.new(1, 0, 0, 12), Position = UDim2.new(0, 0, 1, -12), BackgroundColor3 = theme.SecondaryBg, ZIndex = 11, Parent = tbar })
+
+    MakeLabel({ Size = UDim2.new(1, -90, 1, 0), Position = UDim2.new(0, 14, 0, 0), Text = winName, Font = Enum.Font.GothamBold, TextSize = 14, TextColor3 = theme.TextPrimary, TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 12, Parent = tbar })
+
+    -- Minimize (−)
+    local minBtn = Instance.new("TextButton")
+    minBtn.Size = UDim2.new(0, 28, 0, 28); minBtn.Position = UDim2.new(1, -62, 0.5, -14)
+    minBtn.BackgroundColor3 = theme.TertiaryBg; minBtn.Text = "−"; minBtn.Font = Enum.Font.GothamBold
+    minBtn.TextSize = 18; minBtn.TextColor3 = theme.TextSecondary; minBtn.BorderSizePixel = 0
+    minBtn.ZIndex = 13; minBtn.AutoButtonColor = false; minBtn.Parent = tbar
+    MakeCorner(minBtn, 6)
+
+    -- Close (×)
+    local closeBtn = Instance.new("TextButton")
+    closeBtn.Size = UDim2.new(0, 28, 0, 28); closeBtn.Position = UDim2.new(1, -30, 0.5, -14)
+    closeBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50); closeBtn.Text = "×"; closeBtn.Font = Enum.Font.GothamBold
+    closeBtn.TextSize = 20; closeBtn.TextColor3 = Color3.fromRGB(255,255,255); closeBtn.BorderSizePixel = 0
+    closeBtn.ZIndex = 13; closeBtn.AutoButtonColor = false; closeBtn.Parent = tbar
+    MakeCorner(closeBtn, 6)
+
+    minBtn.MouseEnter:Connect(function()   Tween(minBtn,   { BackgroundColor3 = theme.ElementHover }, 0.1) end)
+    minBtn.MouseLeave:Connect(function()   Tween(minBtn,   { BackgroundColor3 = theme.TertiaryBg  }, 0.1) end)
+    closeBtn.MouseEnter:Connect(function() Tween(closeBtn, { BackgroundColor3 = Color3.fromRGB(220,70,70) }, 0.1) end)
+    closeBtn.MouseLeave:Connect(function() Tween(closeBtn, { BackgroundColor3 = Color3.fromRGB(180,50,50) }, 0.1) end)
+
+    -- ── Body (content + sidebar) ─────────────────────────
+    -- FIX: ClipsDescendants = true only on this inner frame,
+    -- NOT on mainFrame, so notifications outside the window aren't clipped.
+    local body = MakeFrame({
+        Name             = "Body",
+        Size             = UDim2.new(1, 0, 1, -TBAR),
+        Position         = UDim2.new(0, 0, 0, TBAR),
+        BackgroundColor3 = theme.Background,
+        ZIndex           = 10,
+        ClipsDescendants = true,
+        Parent           = mainFrame,
+    })
+
+    -- Tab sidebar
+    local sidebar = MakeFrame({ Name = "Sidebar", Size = UDim2.new(0, TABW, 1, 0), BackgroundColor3 = theme.SecondaryBg, ZIndex = 11, Parent = body })
+    local tabList = Instance.new("UIListLayout"); tabList.SortOrder = Enum.SortOrder.LayoutOrder; tabList.Padding = UDim.new(0, 3); tabList.Parent = sidebar
+    local tabPad  = Instance.new("UIPadding"); tabPad.PaddingTop = UDim.new(0, 8); tabPad.PaddingLeft = UDim.new(0, 6); tabPad.PaddingRight = UDim.new(0, 6); tabPad.Parent = sidebar
+
+    -- Page holder
+    local pageHolder = MakeFrame({ Name = "Pages", Size = UDim2.new(1, -TABW, 1, 0), Position = UDim2.new(0, TABW, 0, 0), BackgroundTransparency = 1, ZIndex = 10, ClipsDescendants = true, Parent = body })
+
+    -- ── Window object ────────────────────────────────────
+    local Win = { _frame = mainFrame, _theme = theme, _tabs = {}, _minimized = false }
+
+    -- Dragging
+    local dragging, dragStart, startPos = false, nil, nil
+    AddConn(tbar.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true; dragStart = i.Position; startPos = mainFrame.Position
+        end
+    end))
+    AddConn(UserInputService.InputChanged:Connect(function(i)
+        if dragging and i.UserInputType == Enum.UserInputType.MouseMovement then
+            local d = i.Position - dragStart
+            mainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+        end
+    end))
+    AddConn(UserInputService.InputEnded:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
+    end))
+
+    -- Minimize: hide body, shrink window height
+    minBtn.MouseButton1Click:Connect(function()
+        Win._minimized = not Win._minimized
+        if Win._minimized then
+            body.Visible = false
+            Tween(mainFrame, { Size = UDim2.new(0, winW, 0, TBAR) }, 0.2)
+        else
+            Tween(mainFrame, { Size = UDim2.new(0, winW, 0, winH) }, 0.2)
+            task.delay(0.15, function() body.Visible = true end)
+        end
+    end)
+
+    closeBtn.MouseButton1Click:Connect(function() mainFrame:Destroy() end)
+
+    function Win:ToggleVisible()
+        if mainFrame and mainFrame.Parent then mainFrame.Visible = not mainFrame.Visible end
+    end
+    function Win:Destroy() if mainFrame and mainFrame.Parent then mainFrame:Destroy() end end
+    function Win:SetStatus() end
+    function Win:SetTheme()  end
+
+    -- ── AddTab ───────────────────────────────────────────
+    function Win:AddTab(opts)
+        local tName = opts.Name or "Tab"
+
+        local tbtn = Instance.new("TextButton")
+        tbtn.Name = "TBtn_"..tName; tbtn.Size = UDim2.new(1,0,0,32)
+        tbtn.BackgroundColor3 = theme.TertiaryBg; tbtn.BackgroundTransparency = 1
+        tbtn.Text = tName; tbtn.Font = Enum.Font.Gotham; tbtn.TextSize = 13
+        tbtn.TextColor3 = theme.TextDim; tbtn.BorderSizePixel = 0
+        tbtn.LayoutOrder = #Win._tabs+1; tbtn.ZIndex = 12; tbtn.AutoButtonColor = false
+        tbtn.Parent = sidebar
+        MakeCorner(tbtn, 6)
+
+        local page = Instance.new("ScrollingFrame")
+        page.Name = "Pg_"..tName; page.Size = UDim2.new(1,0,1,0)
+        page.BackgroundTransparency = 1; page.BorderSizePixel = 0
+        page.ScrollBarThickness = 3; page.ScrollBarImageColor3 = theme.ScrollBar
+        page.CanvasSize = UDim2.new(0,0,0,0); page.AutomaticCanvasSize = Enum.AutomaticSize.Y
+        page.Visible = false; page.ZIndex = 11; page.ClipsDescendants = true
+        page.Parent = pageHolder
+        local pgLL = Instance.new("UIListLayout"); pgLL.SortOrder = Enum.SortOrder.LayoutOrder; pgLL.Padding = UDim.new(0,6); pgLL.Parent = page
+        local pgPd = Instance.new("UIPadding"); pgPd.PaddingTop=UDim.new(0,8); pgPd.PaddingLeft=UDim.new(0,8); pgPd.PaddingRight=UDim.new(0,8); pgPd.PaddingBottom=UDim.new(0,8); pgPd.Parent=page
+
+        local Tab = { _page = page, _btn = tbtn }
+
+        local function Sel()
+            for _, t in ipairs(Win._tabs) do
+                t._page.Visible = false
+                Tween(t._btn, { BackgroundTransparency = 1, TextColor3 = theme.TextDim }, 0.1)
+            end
+            page.Visible = true
+            tbtn.BackgroundTransparency = 0; tbtn.BackgroundColor3 = theme.ElementBg
+            Tween(tbtn, { TextColor3 = theme.TextPrimary }, 0.1)
+        end
+        tbtn.MouseButton1Click:Connect(Sel)
+        table.insert(Win._tabs, Tab)
+        if #Win._tabs == 1 then Sel() end
+
+        -- ── AddSection ───────────────────────────────────
+        function Tab:AddSection(opts)
+            local sName = opts.Name or "Section"
+
+            local sec = Instance.new("Frame")
+            sec.Name = "S_"..sName; sec.Size = UDim2.new(1,0,0,0); sec.AutomaticSize = Enum.AutomaticSize.Y
+            sec.BackgroundColor3 = theme.SecondaryBg; sec.BorderSizePixel = 0
+            sec.LayoutOrder = #page:GetChildren(); sec.ZIndex = 12; sec.ClipsDescendants = false
+            sec.Parent = page
+            MakeCorner(sec, 8)
+
+            MakeLabel({ Size=UDim2.new(1,-12,0,24), Position=UDim2.new(0,10,0,2), Text=sName, Font=Enum.Font.GothamBold, TextSize=12, TextColor3=theme.Accent, TextXAlignment=Enum.TextXAlignment.Left, ZIndex=13, Parent=sec })
+            MakeFrame({ Size=UDim2.new(1,-20,0,1), Position=UDim2.new(0,10,0,24), BackgroundColor3=theme.Border, ZIndex=13, Parent=sec })
+
+            local elems = Instance.new("Frame")
+            elems.Name="Elems"; elems.Size=UDim2.new(1,0,0,0); elems.Position=UDim2.new(0,0,0,26)
+            elems.AutomaticSize=Enum.AutomaticSize.Y; elems.BackgroundTransparency=1; elems.BorderSizePixel=0
+            elems.ZIndex=13; elems.Parent=sec
+            local eLL=Instance.new("UIListLayout"); eLL.SortOrder=Enum.SortOrder.LayoutOrder; eLL.Parent=elems
+            local ePd=Instance.new("UIPadding"); ePd.PaddingBottom=UDim.new(0,6); ePd.Parent=elems
+
+            local Sec = {}
+
+            local function AE(f) f.LayoutOrder = #elems:GetChildren(); f.Parent = elems end
+
+            -- BUTTON ─────────────────────────────────────
+            function Sec:AddButton(o)
+                local n=o.Name or "Button"; local d=o.Description; local cb=o.Callback or function()end
+                local rh = d and 54 or 36
+                local row = MakeFrame({ Size=UDim2.new(1,0,0,rh), BackgroundTransparency=1, ZIndex=14 })
+                local btn = Instance.new("TextButton")
+                btn.Size=UDim2.new(1,-16,0,rh-4); btn.Position=UDim2.new(0,8,0,2)
+                btn.BackgroundColor3=theme.ElementBg; btn.Text=""; btn.BorderSizePixel=0
+                btn.ZIndex=14; btn.AutoButtonColor=false; btn.Parent=row
+                MakeCorner(btn,6)
+                MakeLabel({ Size=UDim2.new(1,-16,0,20), Position=UDim2.new(0,10,0,d and 7 or 9), Text=n, Font=Enum.Font.Gotham, TextSize=13, TextColor3=theme.TextPrimary, TextXAlignment=Enum.TextXAlignment.Left, ZIndex=15, Parent=btn })
+                if d then MakeLabel({ Size=UDim2.new(1,-16,0,16), Position=UDim2.new(0,10,0,27), Text=d, TextSize=11, TextColor3=theme.TextDim, TextXAlignment=Enum.TextXAlignment.Left, ZIndex=15, Parent=btn }) end
+                btn.MouseEnter:Connect(function() Tween(btn,{BackgroundColor3=theme.ElementHover},0.1) end)
+                btn.MouseLeave:Connect(function() Tween(btn,{BackgroundColor3=theme.ElementBg},0.1) end)
+                btn.MouseButton1Click:Connect(function()
+                    Tween(btn,{BackgroundColor3=theme.Accent},0.05)
+                    task.delay(0.12,function() Tween(btn,{BackgroundColor3=theme.ElementBg},0.12) end)
+                    cb()
+                end)
+                AE(row)
+                local B={}; function B:SetName()end; function B:SetCallback(f) cb=f end; return B
+            end
+
+            -- TOGGLE ─────────────────────────────────────
+            function Sec:AddToggle(o)
+                local n=o.Name or "Toggle"; local d=o.Description; local st=o.Default or false
+                local flag=o.Flag; local cb=o.Callback or function()end; local rh=d and 54 or 36
+                if flag then NexusLib.Flags[flag]=st end
+
+                local row=MakeFrame({Size=UDim2.new(1,0,0,rh),BackgroundTransparency=1,ZIndex=14})
+                local bg=Instance.new("TextButton")
+                bg.Size=UDim2.new(1,-16,0,rh-4); bg.Position=UDim2.new(0,8,0,2)
+                bg.BackgroundColor3=theme.ElementBg; bg.Text=""; bg.BorderSizePixel=0
+                bg.ZIndex=14; bg.AutoButtonColor=false; bg.Parent=row
+                MakeCorner(bg,6)
+                MakeLabel({Size=UDim2.new(1,-60,0,20),Position=UDim2.new(0,10,0,d and 7 or 9),Text=n,Font=Enum.Font.Gotham,TextSize=13,TextColor3=theme.TextPrimary,TextXAlignment=Enum.TextXAlignment.Left,ZIndex=15,Parent=bg})
+                if d then MakeLabel({Size=UDim2.new(1,-60,0,16),Position=UDim2.new(0,10,0,27),Text=d,TextSize=11,TextColor3=theme.TextDim,TextXAlignment=Enum.TextXAlignment.Left,ZIndex=15,Parent=bg}) end
+
+                local pill=MakeFrame({Size=UDim2.new(0,36,0,20),Position=UDim2.new(1,-46,0.5,-10),BackgroundColor3=st and theme.ToggleOn or theme.ToggleOff,ZIndex=15,Parent=bg})
+                MakeCorner(pill,10)
+                local dot=MakeFrame({Size=UDim2.new(0,14,0,14),Position=st and UDim2.new(0,19,0.5,-7) or UDim2.new(0,3,0.5,-7),BackgroundColor3=Color3.fromRGB(255,255,255),ZIndex=16,Parent=pill})
+                MakeCorner(dot,7)
+
+                local Tog={}
+                local function SetSt(s,fire)
+                    st=s; if flag then NexusLib.Flags[flag]=s end
+                    Tween(pill,{BackgroundColor3=s and theme.ToggleOn or theme.ToggleOff},0.15)
+                    Tween(dot,{Position=s and UDim2.new(0,19,0.5,-7) or UDim2.new(0,3,0.5,-7)},0.15)
+                    if fire then cb(s) end
+                end
+                bg.MouseButton1Click:Connect(function() SetSt(not st,true) end)
+                function Tog:Set(s) SetSt(s,false) end
+                function Tog:Get() return st end
+                function Tog:SetCallback(f) cb=f end
+                if flag then NexusLib.Options[flag]=Tog end
+                AE(row); return Tog
+            end
+
+            -- SLIDER ─────────────────────────────────────
+            function Sec:AddSlider(o)
+                local n=o.Name or "Slider"; local smin=o.Min or 0; local smax=o.Max or 100
+                local def=o.Default or smin; local sfx=o.Suffix or ""; local prec=o.Precision or 0
+                local flag=o.Flag; local cb=o.Callback or function()end
+                local val=math.clamp(def,smin,smax)
+                if flag then NexusLib.Flags[flag]=val end
+
+                local row=MakeFrame({Size=UDim2.new(1,0,0,58),BackgroundTransparency=1,ZIndex=14})
+                local bg=MakeFrame({Size=UDim2.new(1,-16,0,54),Position=UDim2.new(0,8,0,2),BackgroundColor3=theme.ElementBg,ZIndex=14,Parent=row})
+                MakeCorner(bg,6)
+                MakeLabel({Size=UDim2.new(0.6,0,0,20),Position=UDim2.new(0,10,0,6),Text=n,Font=Enum.Font.Gotham,TextSize=13,TextColor3=theme.TextPrimary,TextXAlignment=Enum.TextXAlignment.Left,ZIndex=15,Parent=bg})
+
+                -- Editable value TextBox (free-type)
+                local vbox=Instance.new("TextBox")
+                vbox.Size=UDim2.new(0,72,0,22); vbox.Position=UDim2.new(1,-80,0,5)
+                vbox.BackgroundColor3=theme.TertiaryBg; vbox.BorderSizePixel=0
+                vbox.Font=Enum.Font.GothamBold; vbox.TextSize=12; vbox.TextColor3=theme.Accent
+                vbox.TextXAlignment=Enum.TextXAlignment.Center; vbox.ClearTextOnFocus=true
+                vbox.ZIndex=15; vbox.Parent=bg
+                MakeCorner(vbox,4)
+
+                local track=MakeFrame({Size=UDim2.new(1,-20,0,6),Position=UDim2.new(0,10,0,36),BackgroundColor3=theme.TertiaryBg,ZIndex=15,Parent=bg})
+                MakeCorner(track,3)
+                local fill=MakeFrame({Size=UDim2.new(0,0,1,0),BackgroundColor3=theme.Accent,ZIndex=16,Parent=track})
+                MakeCorner(fill,3)
+                local thumb=MakeFrame({Size=UDim2.new(0,12,0,12),BackgroundColor3=Color3.fromRGB(255,255,255),ZIndex=17,Parent=track})
+                MakeCorner(thumb,6)
+
+                local Sli={}
+                local function Fmt(v)
+                    if prec==0 then return tostring(math.floor(v+0.5))..sfx
+                    else return string.format("%."..prec.."f",v)..sfx end
+                end
+                local function SV(v,fire)
+                    v=math.clamp(v,smin,smax)
+                    if prec==0 then v=math.floor(v+0.5) end
+                    val=v; if flag then NexusLib.Flags[flag]=v end
+                    local p=(smax-smin>0) and (v-smin)/(smax-smin) or 0
+                    fill.Size=UDim2.new(p,0,1,0); thumb.Position=UDim2.new(p,-6,0.5,-6)
+                    vbox.Text=Fmt(v); if fire then cb(v) end
+                end
+                SV(val,false)
+
+                local sliding=false
+                local function DoSlide(x) SV(smin+(smax-smin)*math.clamp((x-track.AbsolutePosition.X)/math.max(track.AbsoluteSize.X,1),0,1),true) end
+                AddConn(track.InputBegan:Connect(function(i) if i.UserInputType==Enum.UserInputType.MouseButton1 then sliding=true; DoSlide(i.Position.X) end end))
+                AddConn(thumb.InputBegan:Connect(function(i) if i.UserInputType==Enum.UserInputType.MouseButton1 then sliding=true end end))
+                AddConn(UserInputService.InputChanged:Connect(function(i) if sliding and i.UserInputType==Enum.UserInputType.MouseMovement then DoSlide(i.Position.X) end end))
+                AddConn(UserInputService.InputEnded:Connect(function(i) if i.UserInputType==Enum.UserInputType.MouseButton1 then sliding=false end end))
+                vbox.FocusLost:Connect(function()
+                    local num=tonumber(vbox.Text:gsub("[^%d%.%-]",""))
+                    if num then SV(num,true) else vbox.Text=Fmt(val) end
+                end)
+
+                function Sli:Set(v) SV(v,false) end
+                function Sli:Get() return val end
+                function Sli:SetCallback(f) cb=f end
+                AE(row); return Sli
+            end
+
+            -- KEYBIND ────────────────────────────────────
+            function Sec:AddKeybind(o)
+                local n=o.Name or "Keybind"; local def=o.Default; local flag=o.Flag; local cb=o.Callback or function()end
+                local cur=def; local listening=false
+                if flag then NexusLib.Flags[flag]=cur end
+
+                local BLOCK={[Enum.KeyCode.Unknown]=true,[Enum.KeyCode.W]=true,[Enum.KeyCode.A]=true,
+                    [Enum.KeyCode.S]=true,[Enum.KeyCode.D]=true,[Enum.KeyCode.Space]=true,
+                    [Enum.KeyCode.Return]=true,[Enum.KeyCode.LeftShift]=true,
+                    [Enum.KeyCode.LeftControl]=true,[Enum.KeyCode.LeftAlt]=true,
+                    [Enum.KeyCode.RightAlt]=true,[Enum.KeyCode.RightControl]=true}
+
+                local row=MakeFrame({Size=UDim2.new(1,0,0,36),BackgroundTransparency=1,ZIndex=14})
+                local bg=MakeFrame({Size=UDim2.new(1,-16,0,32),Position=UDim2.new(0,8,0,2),BackgroundColor3=theme.ElementBg,ZIndex=14,Parent=row})
+                MakeCorner(bg,6)
+                MakeLabel({Size=UDim2.new(0.55,0,1,0),Position=UDim2.new(0,10,0,0),Text=n,Font=Enum.Font.Gotham,TextSize=13,TextColor3=theme.TextPrimary,TextXAlignment=Enum.TextXAlignment.Left,ZIndex=15,Parent=bg})
+
+                local kbtn=Instance.new("TextButton")
+                kbtn.Size=UDim2.new(0,94,0,22); kbtn.Position=UDim2.new(1,-102,0.5,-11)
+                kbtn.BackgroundColor3=theme.TertiaryBg; kbtn.Text=cur and cur.Name or "None"
+                kbtn.Font=Enum.Font.GothamBold; kbtn.TextSize=12; kbtn.TextColor3=theme.TextSecondary
+                kbtn.BorderSizePixel=0; kbtn.ZIndex=15; kbtn.AutoButtonColor=false; kbtn.Parent=bg
+                MakeCorner(kbtn,5)
+
+                kbtn.MouseButton1Click:Connect(function() listening=true; kbtn.Text="..."; kbtn.TextColor3=theme.Accent end)
+
+                AddConn(UserInputService.InputBegan:Connect(function(inp,gp)
+                    if listening then
+                        if inp.UserInputType~=Enum.UserInputType.Keyboard then return end
+                        listening=false
+                        -- Escape → None
+                        if inp.KeyCode==Enum.KeyCode.Escape then
+                            cur=nil; if flag then NexusLib.Flags[flag]=nil end
+                            kbtn.Text="None"; kbtn.TextColor3=theme.TextSecondary; return
+                        end
+                        -- Blocked
+                        if BLOCK[inp.KeyCode] then
+                            kbtn.Text=cur and cur.Name or "None"; kbtn.TextColor3=theme.TextSecondary; return
+                        end
+                        cur=inp.KeyCode; if flag then NexusLib.Flags[flag]=cur end
+                        kbtn.Text=cur.Name; kbtn.TextColor3=theme.TextSecondary
+                    else
+                        if inp.UserInputType==Enum.UserInputType.Keyboard and cur and inp.KeyCode==cur then cb() end
+                    end
+                end))
+
+                local KB={}
+                function KB:Set(k) cur=k; if flag then NexusLib.Flags[flag]=k end; kbtn.Text=k and k.Name or "None" end
+                function KB:Get() return cur end
+                function KB:SetCallback(f) cb=f end
+                AE(row); return KB
+            end
+
+            -- LABEL ──────────────────────────────────────
+            function Sec:AddLabel(text)
+                local row=MakeFrame({Size=UDim2.new(1,0,0,26),BackgroundTransparency=1,ZIndex=14})
+                local lbl=MakeLabel({Size=UDim2.new(1,-16,1,0),Position=UDim2.new(0,8,0,0),Text=text or "",TextSize=12,TextColor3=theme.TextSecondary,TextXAlignment=Enum.TextXAlignment.Left,TextWrapped=true,ZIndex=15,Parent=row})
+                AE(row)
+                local L={}; function L:Set(t) lbl.Text=t end; function L:SetColor(c) lbl.TextColor3=c end; return L
+            end
+
+            -- SEPARATOR ──────────────────────────────────
+            function Sec:AddSeparator(txt)
+                local rh=txt and 22 or 10
+                local row=MakeFrame({Size=UDim2.new(1,0,0,rh),BackgroundTransparency=1,ZIndex=14})
+                MakeFrame({Size=UDim2.new(1,-16,0,1),Position=UDim2.new(0,8,0.5,0),BackgroundColor3=theme.Border,ZIndex=15,Parent=row})
+                if txt then
+                    local l=MakeLabel({Size=UDim2.new(0,0,1,0),AutomaticSize=Enum.AutomaticSize.X,Position=UDim2.new(0.5,0,0,0),AnchorPoint=Vector2.new(0.5,0),BackgroundColor3=theme.SecondaryBg,Text="  "..txt.."  ",TextSize=11,TextColor3=theme.TextDim,ZIndex=16,Parent=row})
+                    l.BackgroundTransparency=0
+                end
+                AE(row)
+            end
+
+            -- TEXTBOX ────────────────────────────────────
+            function Sec:AddTextbox(o)
+                local n=o.Name or "Textbox"; local ph=o.Placeholder or ""; local d=o.Description
+                local flag=o.Flag; local live=o.LiveUpdate or false; local cb=o.Callback or function()end
+                -- Height: name(20)+gap(6)+[desc(16)+gap(6)]+input(26)+bottompad(6)
+                local rh=d and 82 or 62
+                local row=MakeFrame({Size=UDim2.new(1,0,0,rh),BackgroundTransparency=1,ZIndex=14})
+                local bg=MakeFrame({Size=UDim2.new(1,-16,0,rh-4),Position=UDim2.new(0,8,0,2),BackgroundColor3=theme.ElementBg,ZIndex=14,Parent=row})
+                MakeCorner(bg,6)
+                MakeLabel({Size=UDim2.new(1,-12,0,20),Position=UDim2.new(0,10,0,6),Text=n,Font=Enum.Font.Gotham,TextSize=13,TextColor3=theme.TextPrimary,TextXAlignment=Enum.TextXAlignment.Left,ZIndex=15,Parent=bg})
+
+                local iy=30
+                if d then
+                    MakeLabel({Size=UDim2.new(1,-12,0,16),Position=UDim2.new(0,10,0,28),Text=d,TextSize=11,TextColor3=theme.TextDim,TextXAlignment=Enum.TextXAlignment.Left,ZIndex=15,Parent=bg})
+                    iy=48
+                end
+
+                local inp=Instance.new("TextBox")
+                inp.Size=UDim2.new(1,-20,0,26); inp.Position=UDim2.new(0,10,0,iy)
+                inp.BackgroundColor3=theme.TertiaryBg; inp.BorderSizePixel=0
+                inp.PlaceholderText=ph; inp.PlaceholderColor3=theme.TextDim
+                inp.Text=""; inp.Font=Enum.Font.Gotham; inp.TextSize=12
+                inp.TextColor3=theme.TextPrimary; inp.ZIndex=15; inp.Parent=bg
+                MakeCorner(inp,4)
+
+                local Tb={}
+                if live then
+                    inp:GetPropertyChangedSignal("Text"):Connect(function() if flag then NexusLib.Flags[flag]=inp.Text end; cb(inp.Text) end)
+                else
+                    inp.FocusLost:Connect(function() if flag then NexusLib.Flags[flag]=inp.Text end; cb(inp.Text) end)
+                end
+                function Tb:Set(t) inp.Text=t end; function Tb:Get() return inp.Text end
+                function Tb:SetCallback(f) cb=f end
+                AE(row); return Tb
+            end
+
+            -- COLOR PICKER (stub) ─────────────────────────
+            function Sec:AddColorPicker(o)
+                local n=o.Name or "Color"; local def=o.Default or Color3.fromRGB(255,80,80)
+                local flag=o.Flag; local cb=o.Callback or function()end; local clr=def
+                if flag then NexusLib.Flags[flag]=clr end
+                local row=MakeFrame({Size=UDim2.new(1,0,0,36),BackgroundTransparency=1,ZIndex=14})
+                local bg=MakeFrame({Size=UDim2.new(1,-16,0,32),Position=UDim2.new(0,8,0,2),BackgroundColor3=theme.ElementBg,ZIndex=14,Parent=row})
+                MakeCorner(bg,6)
+                MakeLabel({Size=UDim2.new(0.7,0,1,0),Position=UDim2.new(0,10,0,0),Text=n,Font=Enum.Font.Gotham,TextSize=13,TextColor3=theme.TextPrimary,TextXAlignment=Enum.TextXAlignment.Left,ZIndex=15,Parent=bg})
+                local prev=Instance.new("TextButton"); prev.Size=UDim2.new(0,50,0,22); prev.Position=UDim2.new(1,-58,0.5,-11); prev.BackgroundColor3=clr; prev.Text=""; prev.BorderSizePixel=0; prev.ZIndex=15; prev.Parent=bg
+                MakeCorner(prev,4)
+                local Cp={}
+                function Cp:Set(c) clr=c; prev.BackgroundColor3=c; if flag then NexusLib.Flags[flag]=c end end
+                function Cp:Get() return clr end; function Cp:SetCallback(f) cb=f end
+                AE(row); return Cp
+            end
+
+            -- CREDIT ──────────────────────────────────────
+            function Sec:AddCredit(o)
+                local row=MakeFrame({Size=UDim2.new(1,0,0,44),BackgroundTransparency=1,ZIndex=14})
+                local bg=MakeFrame({Size=UDim2.new(1,-16,0,40),Position=UDim2.new(0,8,0,2),BackgroundColor3=theme.ElementBg,ZIndex=14,Parent=row})
+                MakeCorner(bg,6)
+                MakeLabel({Size=UDim2.new(1,-12,0,20),Position=UDim2.new(0,10,0,4),Text=o.Name or "Author",Font=Enum.Font.GothamBold,TextSize=13,TextColor3=theme.TextPrimary,TextXAlignment=Enum.TextXAlignment.Left,ZIndex=15,Parent=bg})
+                MakeLabel({Size=UDim2.new(1,-12,0,14),Position=UDim2.new(0,10,0,23),Text=o.Description or "",TextSize=11,TextColor3=theme.TextDim,TextXAlignment=Enum.TextXAlignment.Left,ZIndex=15,Parent=bg})
+                AE(row)
+            end
+
+            return Sec
+        end
+
+        return Tab
+    end
+
+    return Win
+end
+
+return NexusLib
