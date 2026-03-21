@@ -618,7 +618,16 @@ function NexusLib:CreateWindow(opts)
         local nt=type(t)=="string" and NexusLib.Themes[t] or t
         if not nt then return end
         theme=nt; Win._theme=nt
-        for _,r in ipairs(_refs) do pcall(function() r[1][r[2]]=theme[r[3]] end) end
+        for _,r in ipairs(_refs) do
+            pcall(function()
+                r[1][r[2]]=theme[r[3]]
+                -- If a matching _alpha key exists, apply it as BackgroundTransparency
+                if r[2]=="BackgroundColor3" then
+                    local a=theme[r[3].."_alpha"]
+                    if a then r[1].BackgroundTransparency=1-a end
+                end
+            end)
+        end
     end
 
     function Win:SetBackground(url)
@@ -934,8 +943,12 @@ function NexusLib:CreateWindow(opts)
                 local Sli={}
 
                 local function Fmt(v)
-                    return prec==0 and tostring(math.floor(v+0.5))..sfx
-                        or string.format("%."..prec.."f",v)..sfx
+                    if prec==0 then
+                        -- Round magnitude then restore sign — avoids floor() sign-asymmetry
+                        local a=math.floor(math.abs(v)+0.5)
+                        return tostring(v<0 and -a or a)..sfx
+                    end
+                    return string.format("%."..prec.."f",v)..sfx
                 end
 
                 -- UpdatePill: refreshes polarity button text + color
@@ -1019,7 +1032,9 @@ function NexusLib:CreateWindow(opts)
                     end
                 end))
                 vbox.FocusLost:Connect(function()
-                    local num=tonumber(vbox.Text:gsub("[^%d%.%-%+]",""))
+                    -- Accept European comma decimal; extract first valid number token
+                    local raw = vbox.Text:gsub(",",".")
+                    local num = tonumber(raw:match("[%-+]?%d*%.?%d+") or "")
                     if num then SV(num,true,free) else vbox.Text=Fmt(val) end
                 end)
 
@@ -1146,10 +1161,17 @@ function NexusLib:CreateWindow(opts)
                 R(arrow,"TextColor3","TextDim")
 
                 local targetH=math.min(#items,6)*28+8
-                local listFrame=MakeFrame({Size=UDim2.new(0,0,0,0),ZIndex=50,Visible=false,Parent=gui})
+                -- Use ScrollingFrame so lists longer than 6 items are scrollable
+                local listFrame=Instance.new("ScrollingFrame")
+                listFrame.Size=UDim2.new(0,0,0,0); listFrame.ZIndex=50; listFrame.Visible=false
+                listFrame.ScrollBarThickness=3; listFrame.BorderSizePixel=0
+                listFrame.ScrollingDirection=Enum.ScrollingDirection.Y
+                listFrame.CanvasSize=UDim2.new(0,0,0,0)
+                listFrame.AutomaticCanvasSize=Enum.AutomaticSize.Y
+                listFrame.ClipsDescendants=true; listFrame.Parent=gui
                 MakeCorner(listFrame,6); MakeStroke(listFrame,theme.Border)
                 R(listFrame,"BackgroundColor3","TertiaryBg")
-                listFrame.ClipsDescendants=true
+                R(listFrame,"ScrollBarImageColor3","ScrollBar")
                 local listLL=Instance.new("UIListLayout"); listLL.SortOrder=Enum.SortOrder.LayoutOrder
                 listLL.Parent=listFrame
                 local listPd=Instance.new("UIPadding")
@@ -1164,7 +1186,7 @@ function NexusLib:CreateWindow(opts)
                     for _,item in ipairs(items) do
                         local ib=Instance.new("TextButton")
                         ib.Size=UDim2.new(1,0,0,28); ib.BackgroundColor3=theme.TertiaryBg
-                        ib.Text=" "..tostring(item); ib.Font=Enum.Font.Gotham; ib.TextSize=12
+                        ib.Text=" "..tostring(item); ib.Font=Enum.Font.Gotham; ib.TextSize=13
                         ib.TextColor3=(item==selected) and theme.Accent or theme.TextSecondary
                         ib.TextXAlignment=Enum.TextXAlignment.Left; ib.BorderSizePixel=0
                         ib.ZIndex=51; ib.AutoButtonColor=false; ib.Parent=listFrame
@@ -1181,10 +1203,15 @@ function NexusLib:CreateWindow(opts)
                 function Drop:Open()
                     open=true; Populate()
                     local ap=dbtn.AbsolutePosition; local as=dbtn.AbsoluteSize
-                    listFrame.Size=UDim2.new(0,as.X,0,0)
-                    listFrame.Position=UDim2.new(0,ap.X,0,ap.Y+as.Y+2)
+                    local w=as.X; local h=math.min(#items,6)*28+8
+                    -- Flip above the button if there isn't enough room below
+                    local screenH=workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize.Y or 800
+                    local spaceBelow=screenH-(ap.Y+as.Y)
+                    local posY=spaceBelow>=h and (ap.Y+as.Y+2) or (ap.Y-h-2)
+                    listFrame.Size=UDim2.new(0,w,0,0)
+                    listFrame.Position=UDim2.new(0,ap.X,0,posY)
                     listFrame.Visible=true
-                    TweenSine(listFrame,{Size=UDim2.new(0,as.X,0,targetH)},0.2)
+                    TweenSine(listFrame,{Size=UDim2.new(0,w,0,h)},0.2)
                     Tween(arrow,{Rotation=180},0.2)
                 end
                 function Drop:Close()
@@ -1320,21 +1347,23 @@ function NexusLib:CreateWindow(opts)
             end
 
             -- ── COLOR PICKER ────────────────────────────
+            -- callback(color, alpha)  where alpha is 0..1 (1=fully opaque)
+            -- :Get() → Color3   :GetAlpha() → number   :Set(c, a?)
             function Sec:AddColorPicker(o)
                 local n=o.Name or "Color"; local def=o.Default or Color3.fromRGB(255,80,80)
                 local flag=o.Flag; local cb=o.Callback or function()end
                 local h,s,v=Color3.toHSV(def); local clr=def
+                local alpha=o.Alpha ~= nil and o.Alpha or 1
                 if flag then NexusLib.Flags[flag]=clr end
 
                 local row=MakeFrame({Size=UDim2.new(1,0,0,36),AutomaticSize=Enum.AutomaticSize.None,
                     BackgroundTransparency=1,ZIndex=14})
                 local bg=MakeFrame({Size=UDim2.new(1,-16,0,32),Position=UDim2.new(0,8,0,2),
                     ZIndex=14,Parent=row})
-                R(bg,"BackgroundColor3","ElementBg"); MakeCorner(bg,6)
-                AddGlow(bg,theme)
+                R(bg,"BackgroundColor3","ElementBg"); MakeCorner(bg,6); AddGlow(bg,theme)
 
                 local nl=MakeLabel({Size=UDim2.new(0.6,0,1,0),Position=UDim2.new(0,10,0,0),
-                    Text=n,Font=Enum.Font.Gotham,TextSize=13,
+                    Text=n,Font=Enum.Font.Gotham,TextSize=14,
                     TextXAlignment=Enum.TextXAlignment.Left,ZIndex=15,Parent=bg})
                 R(nl,"TextColor3","TextPrimary")
 
@@ -1353,6 +1382,7 @@ function NexusLib:CreateWindow(opts)
                 local pll=Instance.new("UIListLayout"); pll.SortOrder=Enum.SortOrder.LayoutOrder
                 pll.Padding=UDim.new(0,6); pll.Parent=panel
 
+                -- SV field
                 local svHolder=MakeFrame({Size=UDim2.new(1,0,0,120),ZIndex=15,LayoutOrder=1,Parent=panel})
                 R(svHolder,"BackgroundColor3","Accent"); MakeCorner(svHolder,4)
                 local wGrad=Instance.new("UIGradient")
@@ -1367,6 +1397,7 @@ function NexusLib:CreateWindow(opts)
                     BackgroundColor3=Color3.new(1,1,1),ZIndex=18,Parent=svHolder})
                 MakeCorner(svCur,5); MakeStroke(svCur,Color3.new(0,0,0),2)
 
+                -- Hue bar
                 local hueHolder=MakeFrame({Size=UDim2.new(1,0,0,16),BackgroundColor3=Color3.new(1,1,1),
                     ZIndex=15,LayoutOrder=2,Parent=panel}); MakeCorner(hueHolder,4)
                 local hGrad=Instance.new("UIGradient")
@@ -1384,16 +1415,31 @@ function NexusLib:CreateWindow(opts)
                     BackgroundColor3=Color3.new(1,1,1),ZIndex=17,Parent=hueHolder})
                 MakeCorner(hCur,2); MakeStroke(hCur,Color3.new(0,0,0),1)
 
+                -- Alpha / Opacity bar
+                local aHolder=MakeFrame({Size=UDim2.new(1,0,0,16),ZIndex=15,LayoutOrder=3,Parent=panel})
+                MakeCorner(aHolder,4)
+                -- Gradient: dark gray (transparent) → current color (opaque)
+                local aGrad=Instance.new("UIGradient")
+                aGrad.Color=ColorSequence.new(Color3.fromRGB(40,40,40),clr)
+                aGrad.Parent=aHolder
+                local aCur=MakeFrame({Size=UDim2.new(0,4,1,0),AnchorPoint=Vector2.new(0.5,0),
+                    BackgroundColor3=Color3.new(1,1,1),ZIndex=17,Parent=aHolder})
+                MakeCorner(aCur,2); MakeStroke(aCur,Color3.new(0,0,0),1)
+                -- Opacity label inside the bar
+                local aLbl=MakeLabel({Size=UDim2.new(0,90,1,0),Position=UDim2.new(1,-90,0,0),
+                    Text="Opacity 100%",TextSize=11,Font=Enum.Font.GothamBold,ZIndex=18,Parent=aHolder})
+                aLbl.TextColor3=Color3.new(1,1,1)
+
+                -- Hex + RGB row
                 local hexRow=MakeFrame({Size=UDim2.new(1,0,0,28),BackgroundTransparency=1,
-                    ZIndex=15,LayoutOrder=3,Parent=panel})
+                    ZIndex=15,LayoutOrder=4,Parent=panel})
                 local hRL=Instance.new("UIListLayout"); hRL.FillDirection=Enum.FillDirection.Horizontal
                 hRL.SortOrder=Enum.SortOrder.LayoutOrder; hRL.Padding=UDim.new(0,6); hRL.Parent=hexRow
-                local hPre=MakeLabel({Size=UDim2.new(0,14,1,0),Text="#",TextSize=12,
-                    ZIndex=16,Parent=hexRow})
+                local hPre=MakeLabel({Size=UDim2.new(0,14,1,0),Text="#",TextSize=13,ZIndex=16,Parent=hexRow})
                 R(hPre,"TextColor3","TextDim")
                 local hexBox=Instance.new("TextBox")
-                hexBox.Size=UDim2.new(0.6,0,1,0); hexBox.BorderSizePixel=0
-                hexBox.Font=Enum.Font.Code; hexBox.TextSize=12; hexBox.Text=""
+                hexBox.Size=UDim2.new(0.55,0,1,0); hexBox.BorderSizePixel=0
+                hexBox.Font=Enum.Font.Code; hexBox.TextSize=13; hexBox.Text=""
                 hexBox.ZIndex=16; hexBox.Parent=hexRow
                 R(hexBox,"BackgroundColor3","ElementBg"); R(hexBox,"TextColor3","TextPrimary")
                 MakeCorner(hexBox,4)
@@ -1403,51 +1449,74 @@ function NexusLib:CreateWindow(opts)
                     svHolder.BackgroundColor3=Color3.fromHSV(h,1,1)
                     svCur.Position=UDim2.new(math.clamp(s,0,1),-5,1-math.clamp(v,0,1),-5)
                     hCur.Position=UDim2.new(h,-2,0,0)
-                    clr=Color3.fromHSV(h,s,v); prev.BackgroundColor3=clr
+                    aCur.Position=UDim2.new(alpha,-2,0,0)
+                    clr=Color3.fromHSV(h,s,v)
+                    prev.BackgroundColor3=clr
+                    prev.BackgroundTransparency=1-alpha
                     hexBox.Text=clr:ToHex()
-                    if flag then NexusLib.Flags[flag]=clr end; cb(clr)
+                    aLbl.Text=("Opacity %d%%"):format(math.round(alpha*100))
+                    aGrad.Color=ColorSequence.new(Color3.fromRGB(40,40,40),clr)
+                    if flag then NexusLib.Flags[flag]=clr end
+                    cb(clr,alpha)
                 end
 
+                -- SV drag
                 local svD=false
                 AddConn(svHolder.InputBegan:Connect(function(i)
                     if i.UserInputType==Enum.UserInputType.MouseButton1 then
                         svD=true
                         local ap=svHolder.AbsolutePosition; local as=svHolder.AbsoluteSize
                         s=math.clamp((i.Position.X-ap.X)/as.X,0,1)
-                        v=1-math.clamp((i.Position.Y-ap.Y)/as.Y,0,1)
-                        UpdateVisuals()
+                        v=1-math.clamp((i.Position.Y-ap.Y)/as.Y,0,1); UpdateVisuals()
                     end
                 end))
                 AddConn(UserInputService.InputChanged:Connect(function(i)
                     if svD and i.UserInputType==Enum.UserInputType.MouseMovement then
                         local ap=svHolder.AbsolutePosition; local as=svHolder.AbsoluteSize
                         s=math.clamp((i.Position.X-ap.X)/as.X,0,1)
-                        v=1-math.clamp((i.Position.Y-ap.Y)/as.Y,0,1)
-                        UpdateVisuals()
+                        v=1-math.clamp((i.Position.Y-ap.Y)/as.Y,0,1); UpdateVisuals()
                     end
                 end))
                 AddConn(UserInputService.InputEnded:Connect(function(i)
                     if i.UserInputType==Enum.UserInputType.MouseButton1 then svD=false end
                 end))
+                -- Hue drag
                 local hD=false
                 AddConn(hueHolder.InputBegan:Connect(function(i)
                     if i.UserInputType==Enum.UserInputType.MouseButton1 then
                         hD=true
                         h=math.clamp((i.Position.X-hueHolder.AbsolutePosition.X)/
-                            math.max(hueHolder.AbsoluteSize.X,1),0,1)
-                        UpdateVisuals()
+                            math.max(hueHolder.AbsoluteSize.X,1),0,1); UpdateVisuals()
                     end
                 end))
                 AddConn(UserInputService.InputChanged:Connect(function(i)
                     if hD and i.UserInputType==Enum.UserInputType.MouseMovement then
                         h=math.clamp((i.Position.X-hueHolder.AbsolutePosition.X)/
-                            math.max(hueHolder.AbsoluteSize.X,1),0,1)
-                        UpdateVisuals()
+                            math.max(hueHolder.AbsoluteSize.X,1),0,1); UpdateVisuals()
                     end
                 end))
                 AddConn(UserInputService.InputEnded:Connect(function(i)
                     if i.UserInputType==Enum.UserInputType.MouseButton1 then hD=false end
                 end))
+                -- Alpha drag
+                local aD=false
+                AddConn(aHolder.InputBegan:Connect(function(i)
+                    if i.UserInputType==Enum.UserInputType.MouseButton1 then
+                        aD=true
+                        alpha=math.clamp((i.Position.X-aHolder.AbsolutePosition.X)/
+                            math.max(aHolder.AbsoluteSize.X,1),0,1); UpdateVisuals()
+                    end
+                end))
+                AddConn(UserInputService.InputChanged:Connect(function(i)
+                    if aD and i.UserInputType==Enum.UserInputType.MouseMovement then
+                        alpha=math.clamp((i.Position.X-aHolder.AbsolutePosition.X)/
+                            math.max(aHolder.AbsoluteSize.X,1),0,1); UpdateVisuals()
+                    end
+                end))
+                AddConn(UserInputService.InputEnded:Connect(function(i)
+                    if i.UserInputType==Enum.UserInputType.MouseButton1 then aD=false end
+                end))
+                -- Hex input
                 hexBox.FocusLost:Connect(function()
                     local hex=hexBox.Text:gsub("#",""):gsub("[^%x]","")
                     if #hex==6 then
@@ -1463,11 +1532,14 @@ function NexusLib:CreateWindow(opts)
                     if open2 then row.AutomaticSize=Enum.AutomaticSize.Y; UpdateVisuals()
                     else row.AutomaticSize=Enum.AutomaticSize.None; row.Size=UDim2.new(1,0,0,36) end
                 end)
-                function Cp:Set(c)
-                    clr=c; h,s,v=Color3.toHSV(c); prev.BackgroundColor3=c
+                function Cp:Set(c,a)
+                    clr=c; h,s,v=Color3.toHSV(c)
+                    if a~=nil then alpha=math.clamp(a,0,1) end
+                    prev.BackgroundColor3=c
                     if flag then NexusLib.Flags[flag]=c end; UpdateVisuals()
                 end
                 function Cp:Get() return clr end
+                function Cp:GetAlpha() return alpha end
                 function Cp:SetCallback(f) cb=f end
                 UpdateVisuals(); AE(row); return Cp
             end
