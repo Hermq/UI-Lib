@@ -1026,6 +1026,7 @@ function NexusLib:CreateWindow(opts)
                 function Sli:Set(v,skipClamp) SV(v,false,skipClamp) end
                 function Sli:Get() return val end
                 function Sli:SetCallback(f) cb=f end
+                if flag then NexusLib.Options[flag]=Sli end
                 AE(row); return Sli
             end
 
@@ -1109,6 +1110,7 @@ function NexusLib:CreateWindow(opts)
                     kbtn.Text=k and k.Name or "None" end
                 function KB:Get() return cur end
                 function KB:SetCallback(f) cb=f end
+                if flag then NexusLib.Options[flag]=KB end
                 AE(row); return KB
             end
 
@@ -1196,6 +1198,7 @@ function NexusLib:CreateWindow(opts)
                 function Drop:Get() return selected end
                 function Drop:SetItems(i) items=i; targetH=math.min(#i,6)*28+8 end
                 function Drop:SetCallback(f) cb=f end
+                if flag then NexusLib.Options[flag]=Drop end
 
                 dbtn.MouseButton1Click:Connect(function()
                     if open then Drop:Close() else Drop:Open() end
