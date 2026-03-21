@@ -4,6 +4,9 @@
 --              accent glow UIStroke, 4 new themes (NeonPulse,
 --              CyberVoid, Sakura, Ember), custom background
 --              image, win:SetBackground(), CanvasGroup tab fade
+--
+--  FIXED: minimize collapse/restore and close animation timings
+--         were mismatched, causing tweens to be cut halfway.
 -- ============================================================
 
 local NexusLib       = {}
@@ -20,7 +23,6 @@ local Players          = game:GetService("Players")
 local LocalPlayer      = Players.LocalPlayer
 
 -- ── Tween helpers ─────────────────────────────────────────
--- Default easing is now Quint (snappier, more premium than Quad)
 local function Tween(obj, props, t, style, dir)
     local ok, tw = pcall(function()
         return TweenService:Create(obj,
@@ -41,16 +43,12 @@ local function TweenSine(obj, props, t)
 end
 
 -- ── Micro-animation helpers ────────────────────────────────
--- HoverScale: tweens a UIScale child on the INNER element (not row),
--- so UIListLayout is never affected and nothing overlaps.
 local function AddHoverScale(obj)
     local us = Instance.new("UIScale"); us.Scale = 1; us.Parent = obj
     obj.MouseEnter:Connect(function() Tween(us, {Scale=1.025}, 0.12) end)
     obj.MouseLeave:Connect(function() Tween(us, {Scale=1},     0.12) end)
 end
 
--- PressScale: tweens UIScale to 0.95 on down, springs back on up.
--- No UDim2 multiplication — avoids the crash in the other AI's version.
 local function AddPressScale(obj)
     local us = obj:FindFirstChildOfClass("UIScale")
     if not us then us = Instance.new("UIScale"); us.Scale = 1; us.Parent = obj end
@@ -58,12 +56,9 @@ local function AddPressScale(obj)
     obj.MouseButton1Up:Connect(function()
         TweenSpring(us, {Scale = obj.MouseEnter and 1.025 or 1}, 0.2)
     end)
-    -- Also restore on mouse leave in case button held and dragged off
     obj.MouseLeave:Connect(function() TweenSpring(us, {Scale=1}, 0.2) end)
 end
 
--- AddGlow: creates a dim UIStroke that brightens + thickens on hover.
--- Takes the LOCAL theme table — never reads NexusLib._theme globally.
 local function AddGlow(obj, theme)
     local glow = Instance.new("UIStroke")
     glow.Thickness    = 0
@@ -207,7 +202,6 @@ NexusLib.Themes = {
         ToggleOn      = Color3.fromRGB(240, 100, 140),
         ToggleOff     = Color3.fromRGB(56, 36, 46),
     },
-    -- ── 4 new themes from v2.3 ────────────────────────────
     NeonPulse = {
         Background    = Color3.fromRGB(10, 8, 20),
         SecondaryBg   = Color3.fromRGB(20, 15, 40),
@@ -428,7 +422,7 @@ function NexusLib:CreateWindow(opts)
     local winH      = (opts.Size and opts.Size.Y) or 400
     local toggleKey = opts.ToggleKey
     local statusTxt = opts.Status    or ""
-    local bgUrl     = opts.CustomBackground  -- optional image URL
+    local bgUrl     = opts.CustomBackground
     local TBAR,SBAR,TABW = 40,22,130
 
     local _refs={}
@@ -444,7 +438,6 @@ function NexusLib:CreateWindow(opts)
         ZIndex=10,ClipsDescendants=false,BackgroundTransparency=1,Parent=gui})
     R(mainFrame,"BackgroundColor3","Background"); MakeCorner(mainFrame,10)
 
-    -- Custom background image (sits behind all content, ZIndex 10)
     local bgImage = nil
     if bgUrl and type(bgUrl)=="string" then
         bgImage = Instance.new("ImageLabel")
@@ -458,7 +451,6 @@ function NexusLib:CreateWindow(opts)
         MakeCorner(bgImage,10)
     end
 
-    -- Animate open
     TweenSpring(mainFrame,{
         Size=UDim2.new(0,winW,0,winH),
         Position=UDim2.new(0.5,-winW/2,0.5,-winH/2),
@@ -546,32 +538,43 @@ function NexusLib:CreateWindow(opts)
         if i.UserInputType==Enum.UserInputType.MouseButton1 then dragging=false end
     end))
 
-    -- Minimize
+    -- ── FIXED: Minimize ──────────────────────────────────
+    -- Original bug: body fade was 0.12s but Visible=false fired after 0.10s,
+    -- cutting the fade short. On restore, body appeared at 0.18s while the
+    -- frame resize was still running (0.25s), causing a content pop-in.
     minBtn.MouseButton1Click:Connect(function()
-        Win._minimized=not Win._minimized
+        Win._minimized = not Win._minimized
         if Win._minimized then
-            TweenSine(body,{BackgroundTransparency=1},0.12)
-            task.delay(0.1,function()
-                body.Visible=false; sbar.Visible=false
-                body.BackgroundTransparency=0
-                Tween(mainFrame,{Size=UDim2.new(0,winW,0,TBAR)},0.2,Enum.EasingStyle.Quart)
+            -- Fade body out completely (0.20s), THEN hide and shrink frame
+            TweenSine(body, {BackgroundTransparency=1}, 0.20)
+            task.delay(0.21, function()          -- 0.21 > 0.20: fade is done
+                body.Visible = false
+                sbar.Visible = false
+                body.BackgroundTransparency = 0  -- reset for next restore
+                Tween(mainFrame, {Size=UDim2.new(0,winW,0,TBAR)}, 0.22, Enum.EasingStyle.Quart)
             end)
         else
-            Tween(mainFrame,{Size=UDim2.new(0,winW,0,winH)},0.25,Enum.EasingStyle.Quart)
-            task.delay(0.18,function()
-                body.Visible=true; sbar.Visible=true
-                body.BackgroundTransparency=1
-                TweenSine(body,{BackgroundTransparency=0},0.15)
+            -- Expand frame first (0.25s), THEN fade body in after it finishes
+            Tween(mainFrame, {Size=UDim2.new(0,winW,0,winH)}, 0.25, Enum.EasingStyle.Quart)
+            task.delay(0.26, function()          -- 0.26 > 0.25: resize is done
+                body.Visible = true
+                sbar.Visible = true
+                body.BackgroundTransparency = 1
+                TweenSine(body, {BackgroundTransparency=0}, 0.20)
             end)
         end
     end)
 
+    -- ── FIXED: Close ─────────────────────────────────────
+    -- Original bug: only shrank to 95% (barely visible) and destroyed
+    -- at 0.22s against a 0.20s tween — leaving only 20ms margin.
+    -- Now shrinks to 88%, fade and destroy timing are both extended.
     closeBtn.MouseButton1Click:Connect(function()
-        TweenSine(mainFrame,{
-            Size=UDim2.new(0,winW*0.95,0,winH*0.95),
-            BackgroundTransparency=1
-        },0.2)
-        task.delay(0.22,function() mainFrame:Destroy() end)
+        TweenSine(mainFrame, {
+            Size                = UDim2.new(0, winW * 0.88, 0, winH * 0.88),
+            BackgroundTransparency = 1,
+        }, 0.28)
+        task.delay(0.30, function() mainFrame:Destroy() end)  -- 0.30 > 0.28
     end)
 
     if toggleKey then
@@ -591,7 +594,7 @@ function NexusLib:CreateWindow(opts)
                 mainFrame.Position.X.Scale,mainFrame.Position.X.Offset,
                 mainFrame.Position.Y.Scale,mainFrame.Position.Y.Offset+8),
                 BackgroundTransparency=1},0.18)
-            task.delay(0.2,function()
+            task.delay(0.20,function()
                 mainFrame.Visible=false; mainFrame.BackgroundTransparency=0
             end)
         else
@@ -618,7 +621,6 @@ function NexusLib:CreateWindow(opts)
         for _,r in ipairs(_refs) do pcall(function() r[1][r[2]]=theme[r[3]] end) end
     end
 
-    -- Set or change the background image at runtime
     function Win:SetBackground(url)
         if bgImage then
             bgImage.Image = url or ""
@@ -664,7 +666,6 @@ function NexusLib:CreateWindow(opts)
             ZIndex=13,Visible=false,Parent=tbtn})
         acBar.Name="AccentBar"; R(acBar,"BackgroundColor3","AccentBar"); MakeCorner(acBar,3)
 
-        -- CanvasGroup wrapper for crossfade on tab switch
         local cg = Instance.new("CanvasGroup")
         cg.Size=UDim2.new(1,0,1,0); cg.BackgroundTransparency=1
         cg.GroupTransparency=1; cg.BorderSizePixel=0
@@ -688,7 +689,6 @@ function NexusLib:CreateWindow(opts)
         local function Sel()
             for _,t in ipairs(Win._tabs) do
                 if t._cg.Visible then
-                    -- Slide left + fade out via CanvasGroup
                     TweenSine(t._cg,{Position=UDim2.new(-0.08,0,0,0)},0.18)
                     Tween(t._cg,{GroupTransparency=1},0.18)
                     task.delay(0.19,function()
@@ -702,14 +702,12 @@ function NexusLib:CreateWindow(opts)
                 if t._btn.Text~="" then Tween(t._btn,{TextColor3=theme.TextDim},0.1) end
             end
 
-            -- Slide in from right + fade in via CanvasGroup
             cg.Position=UDim2.new(0.06,0,0,0)
             cg.GroupTransparency=1
             cg.Visible=true
             TweenSine(cg,{Position=UDim2.new(0,0,0,0)},0.22)
             Tween(cg,{GroupTransparency=0},0.22)
 
-            -- Stagger section fade
             task.spawn(function()
                 local idx=0
                 for _,child in ipairs(page:GetChildren()) do
@@ -984,7 +982,6 @@ function NexusLib:CreateWindow(opts)
                     listening=true; NexusLib._listening=true
                     kbtn.Text="..."; kbtn.TextColor3=theme.Accent
                     kbtn.BackgroundTransparency=0
-                    -- Pulse loop while waiting
                     local function doPulse()
                         if not listening then return end
                         Tween(kbtn,{BackgroundTransparency=0.45},0.35)
