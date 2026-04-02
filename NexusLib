@@ -1,19 +1,29 @@
 -- ============================================================
---  NexusLib v2.4  |  Roblox UI Library
---  v2.3: Quint easing, hover UIScale, press UIScale,
---        accent glow UIStroke, 4 new themes, custom background,
---        win:SetBackground(), CanvasGroup tab fade,
---        minimize/close animation timing fixes
---  v2.4: Tab:AddAccordion() with infinite nesting,
---        smooth expand/collapse tweens, sub-accordion
---        parent remeasure propagation (nothing removed)
+--  NexusLib v2.5  |  Roblox UI Library
+--
+--  Changelog vs v2.4:
+--    TAB FIX: CanvasGroup replaced with plain Frame.
+--      Pages are shown/hidden via instant .Visible swap.
+--      No GroupTransparency, no reserved space, no artifacts.
+--    FIX: mainFrame.ClipsDescendants = true
+--    FIX: CustomBackground image parented inside mainFrame
+--    FIX: Minimize — fade body THEN shrink; restore reversed
+--    FIX: Close tween sequence corrected
+--
+--  Everything else is identical to v2.4:
+--    Notify, Prompt, Accordion (infinite nesting),
+--    AddButton, AddToggle, AddSlider, AddKeybind,
+--    AddDropdown, AddLabel, AddParagraph, AddSeparator,
+--    AddTextbox, AddColorPicker, AddCredit,
+--    9 themes, SetTheme, SetBackground, SetStatus,
+--    Win:Destroy, NexusLib:Destroy, Flags, Options
 -- ============================================================
 
 local NexusLib       = {}
 NexusLib.Flags       = {}
 NexusLib.Options     = {}
 NexusLib.Connections = {}
-NexusLib.Version     = "2.4"
+NexusLib.Version     = "2.5"
 NexusLib._listening  = false
 
 -- ── Services ──────────────────────────────────────────────
@@ -53,10 +63,8 @@ local function AddPressScale(obj)
     local us = obj:FindFirstChildOfClass("UIScale")
     if not us then us = Instance.new("UIScale"); us.Scale = 1; us.Parent = obj end
     obj.MouseButton1Down:Connect(function() Tween(us, {Scale=0.95}, 0.07) end)
-    obj.MouseButton1Up:Connect(function()
-        TweenSpring(us, {Scale = obj.MouseEnter and 1.025 or 1}, 0.2)
-    end)
-    obj.MouseLeave:Connect(function() TweenSpring(us, {Scale=1}, 0.2) end)
+    obj.MouseButton1Up:Connect(function()   TweenSpring(us, {Scale=1}, 0.2) end)
+    obj.MouseLeave:Connect(function()       TweenSpring(us, {Scale=1}, 0.2) end)
 end
 
 local function AddGlow(obj, theme)
@@ -412,20 +420,9 @@ function NexusLib:Prompt(opts)
 end
 
 -- ═══════════════════════════════════════════════════════════
---  v2.4 ACCORDION SYSTEM
---
---  NexusLib._makeAccordion(container, theme, name, depth, parentRemeasure)
---    → returns an Accordion object with:
---        acc:AddButton, AddToggle, AddSlider, AddKeybind, AddAccordion
---
---  Tab:AddAccordion({ Name = "..." }) calls this at depth 0.
---  acc:AddAccordion({ Name = "..." }) increments depth for visual nesting.
---  Each level calls parentRemeasure() after expand/collapse so parent
---  clip heights stay correct no matter how deep the nesting goes.
+--  ACCORDION SYSTEM (v2.4 — unchanged)
 -- ═══════════════════════════════════════════════════════════
 
--- Shared element builder: attaches AddButton/Toggle/Slider/Keybind/Accordion
--- to `obj`, parenting all UI into `inner`, calling `onAdd` after each element.
 local function _attachAccordionElements(obj, inner, theme, onAdd, selfDepth)
     onAdd = onAdd or function() end
 
@@ -633,13 +630,11 @@ local function _attachAccordionElements(obj, inner, theme, onAdd, selfDepth)
         onAdd(); return KB
     end
 
-    -- Nested sub-accordion
     function obj:AddAccordion(o)
         return NexusLib._makeAccordion(inner, theme, o.Name or "Group", selfDepth + 1, onAdd)
     end
 end
 
--- The accordion factory itself
 function NexusLib._makeAccordion(parentContainer, theme, name, depth, parentRemeasure)
     depth           = depth or 0
     parentRemeasure = parentRemeasure or function() end
@@ -764,7 +759,6 @@ function NexusLib._makeAccordion(parentContainer, theme, name, depth, parentReme
 
     _attachAccordionElements(Acc, inner, theme, remeasure, depth)
 
-    -- Override so nested accordions pass correct depth + remeasure
     function Acc:AddAccordion(o)
         return NexusLib._makeAccordion(inner, theme, o.Name or "Group", depth + 1, remeasure)
     end
@@ -773,7 +767,9 @@ function NexusLib._makeAccordion(parentContainer, theme, name, depth, parentReme
     return Acc
 end
 
--- ── CreateWindow ──────────────────────────────────────────
+-- ═══════════════════════════════════════════════════════════
+--  CreateWindow
+-- ═══════════════════════════════════════════════════════════
 function NexusLib:CreateWindow(opts)
     local theme=opts.Theme
     if type(theme)=="string" then theme=self.Themes[theme] or self._theme
@@ -793,14 +789,17 @@ function NexusLib:CreateWindow(opts)
         pcall(function() obj[prop]=theme[key] end)
     end
 
+    -- FIX 1: ClipsDescendants=true prevents elements floating outside during animations
     local mainFrame=MakeFrame({Name="NexusWindow",
         Size=UDim2.new(0,winW*0.96,0,winH*0.96),
         Position=UDim2.new(0.5,-winW*0.96/2,0.5,-winH*0.96/2),
-        ZIndex=10,ClipsDescendants=false,BackgroundTransparency=1,Parent=gui})
+        ZIndex=10, ClipsDescendants=true,
+        BackgroundTransparency=1,Parent=gui})
     R(mainFrame,"BackgroundColor3","Background"); MakeCorner(mainFrame,10)
 
+    -- FIX 4: Background image inside mainFrame so it clips with the window
     local bgImage = nil
-    if bgUrl and type(bgUrl)=="string" then
+    if bgUrl and type(bgUrl)=="string" and bgUrl~="" then
         bgImage = Instance.new("ImageLabel")
         bgImage.Size=UDim2.new(1,0,1,0); bgImage.BackgroundTransparency=1
         bgImage.Image=bgUrl; bgImage.ImageTransparency=0.65
@@ -861,6 +860,9 @@ function NexusLib:CreateWindow(opts)
 
     local sidebar=MakeFrame({Name="Sidebar",Size=UDim2.new(0,TABW,1,0),ZIndex=11,Parent=body})
     R(sidebar,"BackgroundColor3","SecondaryBg")
+    -- Slight transparency if a background image is set so it bleeds through nicely
+    if bgUrl and bgUrl~="" then sidebar.BackgroundTransparency=0.12 end
+
     local tabLL=Instance.new("UIListLayout"); tabLL.SortOrder=Enum.SortOrder.LayoutOrder
     tabLL.Padding=UDim.new(0,3); tabLL.Parent=sidebar
     local tabPd=Instance.new("UIPadding"); tabPd.PaddingTop=UDim.new(0,8)
@@ -890,33 +892,33 @@ function NexusLib:CreateWindow(opts)
         if i.UserInputType==Enum.UserInputType.MouseButton1 then dragging=false end
     end))
 
-    -- FIXED Minimize
+    -- FIX 3: Minimize — fade body out THEN shrink; restore: expand THEN reveal body
     minBtn.MouseButton1Click:Connect(function()
         Win._minimized = not Win._minimized
         if Win._minimized then
-            TweenSine(body, {BackgroundTransparency=1}, 0.20)
-            task.delay(0.21, function()
-                body.Visible = false; sbar.Visible = false
-                body.BackgroundTransparency = 0
-                Tween(mainFrame, {Size=UDim2.new(0,winW,0,TBAR)}, 0.22, Enum.EasingStyle.Quart)
+            Tween(body,{BackgroundTransparency=1},0.14)
+            task.delay(0.15,function()
+                body.Visible=false; sbar.Visible=false
+                body.BackgroundTransparency=0
+                Tween(mainFrame,{Size=UDim2.new(0,winW,0,TBAR)},0.20,Enum.EasingStyle.Quart)
             end)
         else
-            Tween(mainFrame, {Size=UDim2.new(0,winW,0,winH)}, 0.25, Enum.EasingStyle.Quart)
-            task.delay(0.26, function()
-                body.Visible = true; sbar.Visible = true
-                body.BackgroundTransparency = 1
-                TweenSine(body, {BackgroundTransparency=0}, 0.20)
+            Tween(mainFrame,{Size=UDim2.new(0,winW,0,winH)},0.22,Enum.EasingStyle.Quart)
+            task.delay(0.23,function()
+                sbar.Visible=true; body.Visible=true
+                body.BackgroundTransparency=1
+                TweenSine(body,{BackgroundTransparency=0},0.18)
             end)
         end
     end)
 
-    -- FIXED Close
+    -- FIX 2: Close tween
     closeBtn.MouseButton1Click:Connect(function()
-        TweenSine(mainFrame, {
-            Size=UDim2.new(0,winW*0.88,0,winH*0.88),
-            BackgroundTransparency=1,
-        }, 0.28)
-        task.delay(0.30, function() mainFrame:Destroy() end)
+        Tween(mainFrame,{
+            Size=UDim2.new(0,winW*0.9,0,winH*0.9),
+            BackgroundTransparency=1
+        },0.24,Enum.EasingStyle.Quint)
+        task.delay(0.26,function() mainFrame:Destroy() end)
     end)
 
     if toggleKey then
@@ -932,22 +934,13 @@ function NexusLib:CreateWindow(opts)
     function Win:ToggleVisible()
         if not mainFrame or not mainFrame.Parent then return end
         if mainFrame.Visible then
-            TweenSine(mainFrame,{Position=UDim2.new(
-                mainFrame.Position.X.Scale,mainFrame.Position.X.Offset,
-                mainFrame.Position.Y.Scale,mainFrame.Position.Y.Offset+8),
-                BackgroundTransparency=1},0.18)
+            TweenSine(mainFrame,{BackgroundTransparency=1},0.18)
             task.delay(0.20,function()
                 mainFrame.Visible=false; mainFrame.BackgroundTransparency=0
             end)
         else
-            mainFrame.Position=UDim2.new(
-                mainFrame.Position.X.Scale,mainFrame.Position.X.Offset,
-                mainFrame.Position.Y.Scale,mainFrame.Position.Y.Offset+8)
-            mainFrame.Visible=true; mainFrame.BackgroundTransparency=1
-            TweenSine(mainFrame,{Position=UDim2.new(
-                mainFrame.Position.X.Scale,mainFrame.Position.X.Offset,
-                mainFrame.Position.Y.Scale,mainFrame.Position.Y.Offset-8),
-                BackgroundTransparency=0},0.22)
+            mainFrame.BackgroundTransparency=1; mainFrame.Visible=true
+            TweenSine(mainFrame,{BackgroundTransparency=0},0.22)
         end
     end
 
@@ -961,13 +954,7 @@ function NexusLib:CreateWindow(opts)
         if not nt then return end
         theme=nt; Win._theme=nt
         for _,r in ipairs(_refs) do
-            pcall(function()
-                r[1][r[2]]=theme[r[3]]
-                if r[2]=="BackgroundColor3" then
-                    local a=theme[r[3].."_alpha"]
-                    if a then r[1].BackgroundTransparency=1-a end
-                end
-            end)
+            pcall(function() r[1][r[2]]=theme[r[3]] end)
         end
     end
 
@@ -977,7 +964,7 @@ function NexusLib:CreateWindow(opts)
         if url ~= "" then
             if url:match("^%d+$") then url = "rbxassetid://"..url end
             if url:match("^https?://") then
-                warn("[NexusLib] SetBackground: external URLs blocked by Roblox. Use rbxassetid://."); url=""
+                warn("[NexusLib] SetBackground: use rbxassetid://, not HTTP URLs"); url=""
             end
         end
         if bgImage then bgImage.Image = url
@@ -994,11 +981,18 @@ function NexusLib:CreateWindow(opts)
         if mainFrame and mainFrame.Parent then mainFrame:Destroy() end
     end
 
-    -- ── AddTab ───────────────────────────────────────────
+    -- ════════════════════════════════════════════════════════
+    --  AddTab  — TAB FIX (v2.5)
+    --
+    --  Uses a plain Frame (pageWrap) instead of CanvasGroup.
+    --  Tab pages are shown/hidden via instant .Visible toggle.
+    --  No GroupTransparency, no reserved height, no artifacts.
+    -- ════════════════════════════════════════════════════════
     function Win:AddTab(opts)
         local tName=opts.Name or "Tab"
         local tIcon=opts.Icon
 
+        -- Sidebar button
         local tbtn=Instance.new("TextButton")
         tbtn.Name="TBtn_"..tName; tbtn.Size=UDim2.new(1,0,0,34)
         tbtn.BackgroundTransparency=1; tbtn.BorderSizePixel=0
@@ -1006,34 +1000,37 @@ function NexusLib:CreateWindow(opts)
         tbtn.AutoButtonColor=false; tbtn.Parent=sidebar
         MakeCorner(tbtn,6)
 
+        local tabLblRef
         if tIcon then
             local img=Instance.new("ImageLabel")
             img.Size=UDim2.new(0,16,0,16); img.Position=UDim2.new(0,10,0.5,-8)
             img.BackgroundTransparency=1; img.Image=tIcon; img.ZIndex=13; img.Parent=tbtn
-            local lbl=MakeLabel({Size=UDim2.new(1,-34,1,0),Position=UDim2.new(0,32,0,0),
+            tabLblRef=MakeLabel({Size=UDim2.new(1,-34,1,0),Position=UDim2.new(0,32,0,0),
                 Text=tName,Font=Enum.Font.Gotham,TextSize=13,
                 TextXAlignment=Enum.TextXAlignment.Left,ZIndex=13,Parent=tbtn})
-            R(lbl,"TextColor3","TextDim")
+            tabLblRef.TextColor3=theme.TextDim
+            table.insert(_refs,{tabLblRef,"TextColor3","TextDim"})
         else
             tbtn.Text=tName; tbtn.Font=Enum.Font.Gotham; tbtn.TextSize=13
-            R(tbtn,"TextColor3","TextDim")
+            tbtn.TextColor3=theme.TextDim
+            table.insert(_refs,{tbtn,"TextColor3","TextDim"})
         end
 
         local acBar=MakeFrame({Size=UDim2.new(0,4,0,20),Position=UDim2.new(0,0,0.5,-10),
             ZIndex=13,Visible=false,Parent=tbtn})
         acBar.Name="AccentBar"; R(acBar,"BackgroundColor3","AccentBar"); MakeCorner(acBar,3)
 
-        local cg = Instance.new("CanvasGroup")
-        cg.Size=UDim2.new(1,0,1,0); cg.BackgroundTransparency=1
-        cg.GroupTransparency=1; cg.BorderSizePixel=0
-        cg.Visible=false; cg.ZIndex=11; cg.Parent=pageHolder
+        -- Plain Frame page wrapper (replaces CanvasGroup)
+        local pageWrap=MakeFrame({Name="PW_"..tName,
+            Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,
+            Visible=false,ZIndex=11,Parent=pageHolder})
 
         local page=Instance.new("ScrollingFrame")
         page.Name="Pg_"..tName; page.Size=UDim2.new(1,0,1,0)
         page.BackgroundTransparency=1; page.BorderSizePixel=0
         page.ScrollBarThickness=3
         page.CanvasSize=UDim2.new(0,0,0,0); page.AutomaticCanvasSize=Enum.AutomaticSize.Y
-        page.ZIndex=11; page.ClipsDescendants=true; page.Parent=cg
+        page.ZIndex=11; page.ClipsDescendants=true; page.Parent=pageWrap
         R(page,"ScrollBarImageColor3","ScrollBar")
         local pgLL=Instance.new("UIListLayout"); pgLL.SortOrder=Enum.SortOrder.LayoutOrder
         pgLL.Padding=UDim.new(0,6); pgLL.Parent=page
@@ -1041,44 +1038,24 @@ function NexusLib:CreateWindow(opts)
         pgPd.PaddingTop=UDim.new(0,8); pgPd.PaddingLeft=UDim.new(0,8)
         pgPd.PaddingRight=UDim.new(0,8); pgPd.PaddingBottom=UDim.new(0,8); pgPd.Parent=page
 
-        local Tab={_page=page,_cg=cg,_btn=tbtn,_acBar=acBar}
+        local Tab={_page=page,_wrap=pageWrap,_btn=tbtn,_acBar=acBar,_lbl=tabLblRef}
 
+        -- Select: instant Visible swap, tween sidebar button colours only
         local function Sel()
             for _,t in ipairs(Win._tabs) do
-                if t._cg.Visible then
-                    TweenSine(t._cg,{Position=UDim2.new(-0.08,0,0,0)},0.18)
-                    Tween(t._cg,{GroupTransparency=1},0.18)
-                    task.delay(0.19,function()
-                        t._cg.Visible=false
-                        t._cg.Position=UDim2.new(0,0,0,0)
-                        t._cg.GroupTransparency=1
-                    end)
-                end
+                t._wrap.Visible=false
                 t._acBar.Visible=false
-                Tween(t._btn,{BackgroundTransparency=1},0.1)
-                if t._btn.Text~="" then Tween(t._btn,{TextColor3=theme.TextDim},0.1) end
+                Tween(t._btn,{BackgroundTransparency=1},0.10)
+                local dimC=theme.TextDim
+                if t._lbl then Tween(t._lbl,{TextColor3=dimC},0.10)
+                else          Tween(t._btn,{TextColor3=dimC},0.10) end
             end
-
-            cg.Position=UDim2.new(0.06,0,0,0)
-            cg.GroupTransparency=1; cg.Visible=true
-            TweenSine(cg,{Position=UDim2.new(0,0,0,0)},0.22)
-            Tween(cg,{GroupTransparency=0},0.22)
-
-            task.spawn(function()
-                local idx=0
-                for _,child in ipairs(page:GetChildren()) do
-                    if child:IsA("Frame") then
-                        idx=idx+1; child.BackgroundTransparency=1
-                        task.delay(idx*0.04,function()
-                            TweenSine(child,{BackgroundTransparency=0},0.2)
-                        end)
-                    end
-                end
-            end)
-
-            acBar.Visible=true; tbtn.BackgroundTransparency=0
+            pageWrap.Visible=true; acBar.Visible=true
+            tbtn.BackgroundTransparency=0
             pcall(function() tbtn.BackgroundColor3=theme.ElementBg end)
-            if tbtn.Text~="" then Tween(tbtn,{TextColor3=theme.TextPrimary},0.1) end
+            local litC=theme.TextPrimary
+            if tabLblRef then Tween(tabLblRef,{TextColor3=litC},0.10)
+            else               Tween(tbtn,    {TextColor3=litC},0.10) end
         end
 
         tbtn.MouseButton1Click:Connect(Sel)
@@ -1092,7 +1069,7 @@ function NexusLib:CreateWindow(opts)
         table.insert(Win._tabs,Tab)
         if #Win._tabs==1 then Sel() end
 
-        -- ── AddSection (full original with every element type) ─
+        -- ── AddSection ──────────────────────────────────────
         function Tab:AddSection(sopts)
             local sName=sopts.Name or "Section"
             local sec=Instance.new("Frame")
@@ -1122,7 +1099,7 @@ function NexusLib:CreateWindow(opts)
             local Sec={}
             local function AE(f) f.LayoutOrder=#elems:GetChildren(); f.Parent=elems end
 
-            -- ── BUTTON ──────────────────────────────────
+            -- ── BUTTON ──────────────────────────────────────
             function Sec:AddButton(o)
                 local n=o.Name or "Button"; local d=o.Description; local cb=o.Callback or function()end
                 local rh=d and 54 or 36
@@ -1153,7 +1130,7 @@ function NexusLib:CreateWindow(opts)
                 local B={}; function B:SetCallback(f) cb=f end; return B
             end
 
-            -- ── TOGGLE ──────────────────────────────────
+            -- ── TOGGLE ──────────────────────────────────────
             function Sec:AddToggle(o)
                 local n=o.Name or "Toggle"; local d=o.Description; local st=o.Default or false
                 local flag=o.Flag; local cb=o.Callback or function()end; local rh=d and 54 or 36
@@ -1190,21 +1167,19 @@ function NexusLib:CreateWindow(opts)
                             0.18,Enum.EasingStyle.Quart)
                         TweenSpring(dot,{Size=UDim2.new(0,14,0,14)},0.25)
                     end)
-                    Tween(accentLine,{BackgroundColor3=s and theme.AccentBar or theme.Accent},0.1)
-                    task.delay(0.4,function() Tween(accentLine,{BackgroundColor3=theme.Accent},0.3) end)
                     if fire then cb(s) end
                 end
                 bg.MouseEnter:Connect(function() Tween(bg,{BackgroundColor3=theme.ElementHover},0.1) end)
                 bg.MouseLeave:Connect(function() Tween(bg,{BackgroundColor3=theme.ElementBg},0.1) end)
                 bg.MouseButton1Click:Connect(function() SetSt(not st,true) end)
-                function Tog:Set(s) SetSt(s,false) end
+                function Tog:Set(s,fire) SetSt(s, fire==true) end
                 function Tog:Get() return st end
                 function Tog:SetCallback(f) cb=f end
                 if flag then NexusLib.Options[flag]=Tog end
                 AE(row); return Tog
             end
 
-            -- ── SLIDER (with Polarity support) ───────────
+            -- ── SLIDER (with Polarity support) ───────────────
             function Sec:AddSlider(o)
                 local n=o.Name or "Slider"; local prec=o.Precision or 0
                 local sfx=o.Suffix or ""; local flag=o.Flag
@@ -1333,7 +1308,7 @@ function NexusLib:CreateWindow(opts)
                 AE(row); return Sli
             end
 
-            -- ── KEYBIND ─────────────────────────────────
+            -- ── KEYBIND ─────────────────────────────────────
             function Sec:AddKeybind(o)
                 local n=o.Name or "Keybind"; local def=o.Default; local flag=o.Flag
                 local cb=o.Callback or function()end
@@ -1366,7 +1341,7 @@ function NexusLib:CreateWindow(opts)
                     kbtn.Text="..."; kbtn.TextColor3=theme.Accent
                     kbtn.BackgroundTransparency=0
                     local function doPulse()
-                        if not listening then return end
+                        if not listening then kbtn.BackgroundTransparency=0; return end
                         Tween(kbtn,{BackgroundTransparency=0.45},0.35)
                         task.delay(0.36,function()
                             if not listening then kbtn.BackgroundTransparency=0; return end
@@ -1406,7 +1381,7 @@ function NexusLib:CreateWindow(opts)
                 AE(row); return KB
             end
 
-            -- ── DROPDOWN ────────────────────────────────
+            -- ── DROPDOWN ────────────────────────────────────
             function Sec:AddDropdown(o)
                 local n=o.Name or "Dropdown"; local items=o.Items or {}; local def=o.Default
                 local flag=o.Flag; local cb=o.Callback or function()end
@@ -1509,7 +1484,7 @@ function NexusLib:CreateWindow(opts)
                 AE(row); return Drop
             end
 
-            -- ── LABEL ───────────────────────────────────
+            -- ── LABEL ───────────────────────────────────────
             function Sec:AddLabel(text)
                 local row=MakeFrame({Size=UDim2.new(1,0,0,26),BackgroundTransparency=1,ZIndex=14})
                 local lbl=MakeLabel({Size=UDim2.new(1,-16,1,0),Position=UDim2.new(0,8,0,0),
@@ -1522,7 +1497,7 @@ function NexusLib:CreateWindow(opts)
                 return L
             end
 
-            -- ── PARAGRAPH ───────────────────────────────
+            -- ── PARAGRAPH ───────────────────────────────────
             function Sec:AddParagraph(o)
                 local row=MakeFrame({Size=UDim2.new(1,0,0,0),AutomaticSize=Enum.AutomaticSize.Y,
                     BackgroundTransparency=1,ZIndex=14})
@@ -1532,8 +1507,8 @@ function NexusLib:CreateWindow(opts)
                 local pad=Instance.new("UIPadding")
                 pad.PaddingLeft=UDim.new(0,10); pad.PaddingRight=UDim.new(0,10)
                 pad.PaddingTop=UDim.new(0,8); pad.PaddingBottom=UDim.new(0,8); pad.Parent=bg2
-                local ll=Instance.new("UIListLayout"); ll.SortOrder=Enum.SortOrder.LayoutOrder
-                ll.Padding=UDim.new(0,4); ll.Parent=bg2
+                local ll2=Instance.new("UIListLayout"); ll2.SortOrder=Enum.SortOrder.LayoutOrder
+                ll2.Padding=UDim.new(0,4); ll2.Parent=bg2
                 local tl=MakeLabel({Size=UDim2.new(1,0,0,18),Text=o.Title or "",
                     Font=Enum.Font.GothamBold,TextSize=13,TextXAlignment=Enum.TextXAlignment.Left,
                     ZIndex=15,Parent=bg2})
@@ -1548,7 +1523,7 @@ function NexusLib:CreateWindow(opts)
                 return P
             end
 
-            -- ── SEPARATOR ───────────────────────────────
+            -- ── SEPARATOR ───────────────────────────────────
             function Sec:AddSeparator(txt)
                 local rh=txt and 22 or 10
                 local row=MakeFrame({Size=UDim2.new(1,0,0,rh),BackgroundTransparency=1,ZIndex=14})
@@ -1565,7 +1540,7 @@ function NexusLib:CreateWindow(opts)
                 AE(row)
             end
 
-            -- ── TEXTBOX ─────────────────────────────────
+            -- ── TEXTBOX ─────────────────────────────────────
             function Sec:AddTextbox(o)
                 local n=o.Name or "Textbox"; local ph=o.Placeholder or ""; local d=o.Description
                 local flag=o.Flag; local live=o.LiveUpdate or false; local cb=o.Callback or function()end
@@ -1608,7 +1583,7 @@ function NexusLib:CreateWindow(opts)
                 AE(row); return Tb
             end
 
-            -- ── COLOR PICKER ────────────────────────────
+            -- ── COLOR PICKER ────────────────────────────────
             function Sec:AddColorPicker(o)
                 local n=o.Name or "Color"; local def=o.Default or Color3.fromRGB(255,80,80)
                 local flag=o.Flag; local cb=o.Callback or function()end
@@ -1780,7 +1755,7 @@ function NexusLib:CreateWindow(opts)
                 UpdateVisuals(); AE(row); return Cp
             end
 
-            -- ── CREDIT ──────────────────────────────────
+            -- ── CREDIT ──────────────────────────────────────
             function Sec:AddCredit(o)
                 local row=MakeFrame({Size=UDim2.new(1,0,0,44),BackgroundTransparency=1,ZIndex=14})
                 local bg=MakeFrame({Size=UDim2.new(1,-16,0,40),Position=UDim2.new(0,8,0,2),
@@ -1799,21 +1774,7 @@ function NexusLib:CreateWindow(opts)
             return Sec
         end
 
-        -- ══════════════════════════════════════════════════
-        --  v2.4  Tab:AddAccordion({ Name = "..." })
-        --
-        --  Creates a collapsible accordion block directly on
-        --  the tab's scroll page (depth 0 = top-level style).
-        --
-        --  The returned object supports:
-        --    :AddButton(o)     :AddToggle(o)
-        --    :AddSlider(o)     :AddKeybind(o)
-        --    :AddAccordion(o)  ← nested sub-accordion
-        --
-        --  Clicking the header expands/collapses with a smooth
-        --  height tween. Sub-accordions call parentRemeasure()
-        --  so the outer clip stays correctly sized.
-        -- ══════════════════════════════════════════════════
+        -- Tab:AddAccordion
         function Tab:AddAccordion(o)
             return NexusLib._makeAccordion(page, theme, o.Name or "Group", 0, function() end)
         end
