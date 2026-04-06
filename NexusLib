@@ -1079,22 +1079,67 @@ function NexusLib:CreateWindow(opts)
             sec.ClipsDescendants=false; sec.Parent=page
             R(sec,"BackgroundColor3","SecondaryBg"); MakeCorner(sec,8)
 
-            local secHdr=MakeLabel({Size=UDim2.new(1,-12,0,24),Position=UDim2.new(0,10,0,2),
+            -- Collapsible header button
+            local secHdrBtn=Instance.new("TextButton")
+            secHdrBtn.Size=UDim2.new(1,0,0,28); secHdrBtn.Position=UDim2.new(0,0,0,0)
+            secHdrBtn.BackgroundTransparency=1; secHdrBtn.Text=""
+            secHdrBtn.BorderSizePixel=0; secHdrBtn.AutoButtonColor=false
+            secHdrBtn.ZIndex=13; secHdrBtn.Parent=sec
+            local secHdr=MakeLabel({Size=UDim2.new(1,-32,0,24),Position=UDim2.new(0,10,0,2),
                 Text=sName,Font=Enum.Font.GothamBold,TextSize=12,
-                TextXAlignment=Enum.TextXAlignment.Left,ZIndex=13,Parent=sec})
+                TextXAlignment=Enum.TextXAlignment.Left,ZIndex=14,Parent=secHdrBtn})
             R(secHdr,"TextColor3","Accent")
-            local secDiv=MakeFrame({Size=UDim2.new(1,-20,0,1),Position=UDim2.new(0,10,0,24),
+            -- Arrow: ◀ when collapsed, rotates to point down (▼) when expanded
+            local secArrow=MakeLabel({Size=UDim2.new(0,20,0,24),Position=UDim2.new(1,-24,0,2),
+                Text="◀",TextSize=11,Font=Enum.Font.GothamBold,ZIndex=14,Parent=secHdrBtn})
+            R(secArrow,"TextColor3","TextDim")
+            local secDiv=MakeFrame({Size=UDim2.new(1,-20,0,1),Position=UDim2.new(0,10,0,27),
                 ZIndex=13,Parent=sec})
             R(secDiv,"BackgroundColor3","Border")
 
+            -- Clip frame so collapse animates cleanly
+            local secClip=MakeFrame({Size=UDim2.new(1,0,0,0),Position=UDim2.new(0,0,0,29),
+                BackgroundTransparency=1,ClipsDescendants=true,ZIndex=12,Parent=sec})
+
             local elems=Instance.new("Frame")
             elems.Name="Elems"; elems.Size=UDim2.new(1,0,0,0)
-            elems.Position=UDim2.new(0,0,0,26); elems.AutomaticSize=Enum.AutomaticSize.Y
+            elems.AutomaticSize=Enum.AutomaticSize.Y
             elems.BackgroundTransparency=1; elems.BorderSizePixel=0
-            elems.ZIndex=13; elems.Parent=sec
+            elems.ZIndex=13; elems.Parent=secClip
             local eLL=Instance.new("UIListLayout"); eLL.SortOrder=Enum.SortOrder.LayoutOrder
             eLL.Parent=elems
             local ePd=Instance.new("UIPadding"); ePd.PaddingBottom=UDim.new(0,6); ePd.Parent=elems
+
+            -- Collapse/expand logic
+            local secExpanded=true
+            local function secExpand()
+                secExpanded=true
+                task.wait()
+                local h=elems.AbsoluteSize.Y
+                TweenSine(secClip,{Size=UDim2.new(1,0,0,h)},0.2)
+                Tween(secArrow,{Rotation=90},0.18)
+                secDiv.Visible=true
+            end
+            local function secCollapse()
+                secExpanded=false
+                TweenSine(secClip,{Size=UDim2.new(1,0,0,0)},0.18)
+                Tween(secArrow,{Rotation=0},0.18)
+                secDiv.Visible=false
+            end
+            -- Start expanded; open on first layout
+            task.spawn(secExpand)
+            secHdrBtn.MouseButton1Click:Connect(function()
+                if secExpanded then secCollapse() else task.spawn(secExpand) end
+            end)
+            secHdrBtn.MouseEnter:Connect(function() Tween(secArrow,{TextTransparency=0},0.1) end)
+            secHdrBtn.MouseLeave:Connect(function() Tween(secArrow,{TextTransparency=0.3},0.1) end)
+            -- Remeasure clip when contents change size
+            eLL:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+                if secExpanded then
+                    task.wait()
+                    secClip.Size=UDim2.new(1,0,0,elems.AbsoluteSize.Y)
+                end
+            end)
 
             local Sec={}
             local function AE(f) f.LayoutOrder=#elems:GetChildren(); f.Parent=elems end
@@ -1385,87 +1430,152 @@ function NexusLib:CreateWindow(opts)
             function Sec:AddDropdown(o)
                 local n=o.Name or "Dropdown"; local items=o.Items or {}; local def=o.Default
                 local flag=o.Flag; local cb=o.Callback or function()end
-                local selected=def; local open=false
+                local selected=def; local open=false; local searchText=""
                 if flag then NexusLib.Flags[flag]=selected end
+
+                -- Outer row (full width) — this is what we anchor the list under
                 local row=MakeFrame({Size=UDim2.new(1,0,0,36),BackgroundTransparency=1,ZIndex=14})
                 local bg=MakeFrame({Size=UDim2.new(1,-16,0,32),Position=UDim2.new(0,8,0,2),
                     ZIndex=14,Parent=row})
                 R(bg,"BackgroundColor3","ElementBg"); MakeCorner(bg,6); AddGlow(bg,theme)
+
+                -- Label (left half)
                 local nl=MakeLabel({Size=UDim2.new(0.5,0,1,0),Position=UDim2.new(0,10,0,0),
                     Text=n,Font=Enum.Font.Gotham,TextSize=13,
                     TextXAlignment=Enum.TextXAlignment.Left,ZIndex=15,Parent=bg})
                 R(nl,"TextColor3","TextPrimary")
+
+                -- The clickable "selected value" button (right half of bg)
                 local dbtn=Instance.new("TextButton")
                 dbtn.Size=UDim2.new(0.46,0,0,22); dbtn.Position=UDim2.new(0.52,0,0.5,-11)
-                dbtn.Text=selected or "Select..."; dbtn.Font=Enum.Font.Gotham; dbtn.TextSize=12
+                dbtn.Font=Enum.Font.Gotham; dbtn.TextSize=12
                 dbtn.BorderSizePixel=0; dbtn.ZIndex=15; dbtn.AutoButtonColor=false
-                dbtn.Parent=bg; dbtn.ClipsDescendants=true
+                dbtn.Parent=bg; dbtn.ClipsDescendants=false
                 R(dbtn,"BackgroundColor3","TertiaryBg"); R(dbtn,"TextColor3","TextSecondary")
                 MakeCorner(dbtn,5); AddHoverScale(dbtn); AddPressScale(dbtn)
-                local arrow=MakeLabel({Size=UDim2.new(0,16,1,0),Position=UDim2.new(1,-18,0,0),
-                    Text="▾",TextSize=12,ZIndex=16,Parent=dbtn})
+
+                -- Selected text label (left of arrow inside dbtn)
+                local selLbl=MakeLabel({Size=UDim2.new(1,-22,1,0),Position=UDim2.new(0,6,0,0),
+                    Text=selected or "Select...",Font=Enum.Font.Gotham,TextSize=12,
+                    TextTruncate=Enum.TextTruncate.AtEnd,
+                    TextXAlignment=Enum.TextXAlignment.Left,ZIndex=16,Parent=dbtn})
+                R(selLbl,"TextColor3","TextSecondary")
+
+                -- Arrow: ◀ closed → rotates -90° to point down when open
+                local arrow=MakeLabel({Size=UDim2.new(0,18,1,0),Position=UDim2.new(1,-20,0,0),
+                    Text="◀",TextSize=11,Font=Enum.Font.GothamBold,ZIndex=16,Parent=dbtn})
                 R(arrow,"TextColor3","TextDim")
+
+                -- ── List panel (parented to gui so it floats above everything) ──
+                local listOuter=MakeFrame({Size=UDim2.new(0,0,0,0),ZIndex=60,
+                    Visible=false,ClipsDescendants=true,Parent=gui})
+                MakeCorner(listOuter,6); MakeStroke(listOuter,theme.Border)
+                R(listOuter,"BackgroundColor3","TertiaryBg")
+
+                -- Search box at top of list
+                local searchBox=Instance.new("TextBox")
+                searchBox.Size=UDim2.new(1,0,0,28); searchBox.BackgroundTransparency=0
+                searchBox.PlaceholderText="🔍  Search..."; searchBox.Text=""
+                searchBox.Font=Enum.Font.Gotham; searchBox.TextSize=12
+                searchBox.BorderSizePixel=0; searchBox.ZIndex=62; searchBox.ClearTextOnFocus=false
+                searchBox.Parent=listOuter
+                R(searchBox,"BackgroundColor3","ElementBg"); R(searchBox,"TextColor3","TextPrimary")
+                R(searchBox,"PlaceholderColor3","TextDim")
+                local searchPad=Instance.new("UIPadding"); searchPad.PaddingLeft=UDim.new(0,8)
+                searchPad.PaddingRight=UDim.new(0,8); searchPad.Parent=searchBox
+                local searchDiv=MakeFrame({Size=UDim2.new(1,0,0,1),Position=UDim2.new(0,0,1,-1),
+                    ZIndex=63,Parent=searchBox})
+                R(searchDiv,"BackgroundColor3","Border")
+
+                -- Scrolling list below search
                 local listFrame=Instance.new("ScrollingFrame")
-                listFrame.Size=UDim2.new(0,0,0,0); listFrame.ZIndex=50; listFrame.Visible=false
+                listFrame.Size=UDim2.new(1,0,1,-29); listFrame.Position=UDim2.new(0,0,0,29)
                 listFrame.ScrollBarThickness=3; listFrame.BorderSizePixel=0
                 listFrame.ScrollingDirection=Enum.ScrollingDirection.Y
                 listFrame.CanvasSize=UDim2.new(0,0,0,0)
                 listFrame.AutomaticCanvasSize=Enum.AutomaticSize.Y
-                listFrame.ClipsDescendants=true; listFrame.Parent=gui
-                MakeCorner(listFrame,6); MakeStroke(listFrame,theme.Border)
-                R(listFrame,"BackgroundColor3","TertiaryBg")
+                listFrame.ClipsDescendants=true; listFrame.BackgroundTransparency=1
+                listFrame.ZIndex=61; listFrame.Parent=listOuter
                 R(listFrame,"ScrollBarImageColor3","ScrollBar")
                 local listLL=Instance.new("UIListLayout"); listLL.SortOrder=Enum.SortOrder.LayoutOrder
                 listLL.Parent=listFrame
                 local listPd=Instance.new("UIPadding")
-                listPd.PaddingTop=UDim.new(0,4); listPd.PaddingBottom=UDim.new(0,4)
+                listPd.PaddingTop=UDim.new(0,3); listPd.PaddingBottom=UDim.new(0,3)
                 listPd.Parent=listFrame
+
                 local Drop={}
-                local function Populate()
+                local function Populate(filter)
+                    filter=filter or ""
                     for _,c in pairs(listFrame:GetChildren()) do
                         if c:IsA("TextButton") then c:Destroy() end
                     end
+                    local fLow=filter:lower()
                     for _,item in ipairs(items) do
-                        local ib=Instance.new("TextButton")
-                        ib.Size=UDim2.new(1,0,0,28); ib.BackgroundColor3=theme.TertiaryBg
-                        ib.Text=" "..tostring(item); ib.Font=Enum.Font.Gotham; ib.TextSize=13
-                        ib.TextColor3=(item==selected) and theme.Accent or theme.TextSecondary
-                        ib.TextXAlignment=Enum.TextXAlignment.Left; ib.BorderSizePixel=0
-                        ib.ZIndex=51; ib.AutoButtonColor=false; ib.Parent=listFrame
-                        ib.MouseEnter:Connect(function() Tween(ib,{BackgroundColor3=theme.ElementHover},0.08) end)
-                        ib.MouseLeave:Connect(function() Tween(ib,{BackgroundColor3=theme.TertiaryBg},0.08) end)
-                        ib.MouseButton1Click:Connect(function()
-                            selected=item; dbtn.Text=tostring(item)
-                            if flag then NexusLib.Flags[flag]=item end
-                            cb(item); Drop:Close()
-                        end)
+                        local itemStr=tostring(item)
+                        if fLow=="" or itemStr:lower():find(fLow,1,true) then
+                            local ib=Instance.new("TextButton")
+                            ib.Size=UDim2.new(1,0,0,28); ib.BackgroundColor3=theme.TertiaryBg
+                            ib.Text=" "..itemStr; ib.Font=Enum.Font.Gotham; ib.TextSize=13
+                            ib.TextColor3=(item==selected) and theme.Accent or theme.TextSecondary
+                            ib.TextXAlignment=Enum.TextXAlignment.Left; ib.BorderSizePixel=0
+                            ib.ZIndex=62; ib.AutoButtonColor=false; ib.Parent=listFrame
+                            ib.MouseEnter:Connect(function() Tween(ib,{BackgroundColor3=theme.ElementHover},0.08) end)
+                            ib.MouseLeave:Connect(function() Tween(ib,{BackgroundColor3=theme.TertiaryBg},0.08) end)
+                            ib.MouseButton1Click:Connect(function()
+                                selected=item
+                                selLbl.Text=tostring(item); selLbl.TextColor3=theme.Accent
+                                if flag then NexusLib.Flags[flag]=item end
+                                cb(item); Drop:Close()
+                            end)
+                        end
                     end
                 end
+
+                searchBox:GetPropertyChangedSignal("Text"):Connect(function()
+                    searchText=searchBox.Text; Populate(searchText)
+                end)
+
                 function Drop:Open()
-                    open=true; Populate()
-                    local ap=dbtn.AbsolutePosition; local as=dbtn.AbsoluteSize
-                    local w=as.X; local h=math.min(#items,6)*28+8
+                    open=true; searchBox.Text=""; searchText=""; Populate("")
+                    -- Anchor to the bg frame (the full-width element background)
+                    local ap=bg.AbsolutePosition; local as=bg.AbsoluteSize
+                    local w=as.X
+                    local SEARCH_H=29
+                    local itemCount=math.min(#items,6)
+                    local listH=itemCount*28+6
+                    local totalH=SEARCH_H+listH
                     local screenH=workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize.Y or 800
                     local spaceBelow=screenH-(ap.Y+as.Y)
-                    local posY=spaceBelow>=h and (ap.Y+as.Y+2) or (ap.Y-h-2)
-                    listFrame.Size=UDim2.new(0,w,0,0)
-                    listFrame.Position=UDim2.new(0,ap.X,0,posY)
-                    listFrame.Visible=true
-                    TweenSine(listFrame,{Size=UDim2.new(0,w,0,h)},0.2)
-                    Tween(arrow,{Rotation=180},0.2)
+                    local posY=spaceBelow>=totalH and (ap.Y+as.Y+2) or (ap.Y-totalH-2)
+                    listOuter.Size=UDim2.new(0,w,0,0)
+                    listOuter.Position=UDim2.new(0,ap.X,0,posY)
+                    listOuter.Visible=true
+                    TweenSine(listOuter,{Size=UDim2.new(0,w,0,totalH)},0.2)
+                    -- ◀ rotates -90° → points downward
+                    Tween(arrow,{Rotation=-90},0.2)
+                    task.delay(0.05,function() searchBox:CaptureFocus() end)
                 end
                 function Drop:Close()
                     open=false
-                    TweenSine(listFrame,{Size=UDim2.new(0,listFrame.Size.X.Offset,0,0)},0.15)
-                    task.delay(0.16,function() listFrame.Visible=false end)
+                    TweenSine(listOuter,{Size=UDim2.new(0,listOuter.Size.X.Offset,0,0)},0.15)
+                    task.delay(0.16,function() listOuter.Visible=false end)
                     Tween(arrow,{Rotation=0},0.15)
+                    searchBox:ReleaseFocus()
                 end
-                function Drop:Set(v) selected=v; dbtn.Text=tostring(v)
-                    if flag then NexusLib.Flags[flag]=v end end
+                function Drop:Set(v)
+                    selected=v
+                    selLbl.Text=v~=nil and tostring(v) or "Select..."
+                    selLbl.TextColor3=v~=nil and theme.Accent or theme.TextSecondary
+                    if flag then NexusLib.Flags[flag]=v end
+                end
                 function Drop:Get() return selected end
                 function Drop:SetItems(i) items=i end
                 function Drop:SetCallback(f) cb=f end
                 if flag then NexusLib.Options[flag]=Drop end
+                -- Apply default display
+                if selected~=nil then
+                    selLbl.Text=tostring(selected); selLbl.TextColor3=theme.Accent
+                end
                 dbtn.MouseButton1Click:Connect(function()
                     if open then Drop:Close() else Drop:Open() end
                 end)
@@ -1474,10 +1584,11 @@ function NexusLib:CreateWindow(opts)
                         task.defer(function()
                             if not dbtn:IsDescendantOf(gui) then return end
                             local mp=UserInputService:GetMouseLocation()
-                            local lp=listFrame.AbsolutePosition; local ls=listFrame.AbsoluteSize
-                            if mp.X<lp.X or mp.X>lp.X+ls.X or mp.Y<lp.Y or mp.Y>lp.Y+ls.Y then
-                                Drop:Close()
-                            end
+                            local lp=listOuter.AbsolutePosition; local ls=listOuter.AbsoluteSize
+                            local dbp=dbtn.AbsolutePosition; local dbs=dbtn.AbsoluteSize
+                            local inList=mp.X>=lp.X and mp.X<=lp.X+ls.X and mp.Y>=lp.Y and mp.Y<=lp.Y+ls.Y
+                            local inBtn=mp.X>=dbp.X and mp.X<=dbp.X+dbs.X and mp.Y>=dbp.Y and mp.Y<=dbp.Y+dbs.Y
+                            if not inList and not inBtn then Drop:Close() end
                         end)
                     end
                 end))
@@ -1790,4 +1901,3 @@ function NexusLib:CreateWindow(opts)
 end
 
 return NexusLib
-
