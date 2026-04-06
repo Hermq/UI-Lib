@@ -1770,7 +1770,9 @@ function NexusLib:CreateWindow(opts)
                     TextXAlignment=Enum.TextXAlignment.Left,ZIndex=15,Parent=bg})
                 R(dl,"TextColor3","TextDim"); AE(row)
             end
-
+    function Sec:AddAccordion(o)
+    return NexusLib._makeAccordion(elems, theme, o.Name or "Group", 0, function() end)
+    end
             return Sec
         end
 
