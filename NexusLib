@@ -1072,77 +1072,137 @@ function NexusLib:CreateWindow(opts)
         -- ── AddSection ──────────────────────────────────────
         function Tab:AddSection(sopts)
             local sName=sopts.Name or "Section"
+            local HDR_H = 28   -- height of the header row
+            local DIV_H = 1    -- divider
+            local CLIP_TOP = HDR_H + DIV_H  -- where clip starts
+
             local sec=Instance.new("Frame")
-            sec.Name="S_"..sName; sec.Size=UDim2.new(1,0,0,0)
-            sec.AutomaticSize=Enum.AutomaticSize.Y; sec.BorderSizePixel=0
+            sec.Name="S_"..sName
+            -- Start with just the header height; we'll grow it when content loads
+            sec.Size=UDim2.new(1,0,0,HDR_H)
+            sec.AutomaticSize=Enum.AutomaticSize.None   -- we drive height manually
+            sec.BorderSizePixel=0
             sec.LayoutOrder=#page:GetChildren(); sec.ZIndex=12
             sec.ClipsDescendants=false; sec.Parent=page
             R(sec,"BackgroundColor3","SecondaryBg"); MakeCorner(sec,8)
 
             -- Collapsible header button
             local secHdrBtn=Instance.new("TextButton")
-            secHdrBtn.Size=UDim2.new(1,0,0,28); secHdrBtn.Position=UDim2.new(0,0,0,0)
+            secHdrBtn.Size=UDim2.new(1,0,0,HDR_H)
             secHdrBtn.BackgroundTransparency=1; secHdrBtn.Text=""
             secHdrBtn.BorderSizePixel=0; secHdrBtn.AutoButtonColor=false
             secHdrBtn.ZIndex=13; secHdrBtn.Parent=sec
-            local secHdr=MakeLabel({Size=UDim2.new(1,-32,0,24),Position=UDim2.new(0,10,0,2),
+
+            local secHdr=MakeLabel({
+                Size=UDim2.new(1,-32,0,24),Position=UDim2.new(0,10,0,2),
                 Text=sName,Font=Enum.Font.GothamBold,TextSize=12,
                 TextXAlignment=Enum.TextXAlignment.Left,ZIndex=14,Parent=secHdrBtn})
             R(secHdr,"TextColor3","Accent")
-            -- Arrow: ◀ when collapsed, rotates to point down (▼) when expanded
-            local secArrow=MakeLabel({Size=UDim2.new(0,20,0,24),Position=UDim2.new(1,-24,0,2),
+
+            -- Arrow: ◀ collapsed → rotates -90° (points down) when expanded
+            local secArrow=MakeLabel({
+                Size=UDim2.new(0,20,0,24),Position=UDim2.new(1,-24,0,2),
                 Text="◀",TextSize=11,Font=Enum.Font.GothamBold,ZIndex=14,Parent=secHdrBtn})
             R(secArrow,"TextColor3","TextDim")
-            local secDiv=MakeFrame({Size=UDim2.new(1,-20,0,1),Position=UDim2.new(0,10,0,27),
+
+            local secDiv=MakeFrame({
+                Size=UDim2.new(1,-20,0,DIV_H),
+                Position=UDim2.new(0,10,0,HDR_H-1),
                 ZIndex=13,Parent=sec})
             R(secDiv,"BackgroundColor3","Border")
 
-            -- Clip frame so collapse animates cleanly
-            local secClip=MakeFrame({Size=UDim2.new(1,0,0,0),Position=UDim2.new(0,0,0,29),
-                BackgroundTransparency=1,ClipsDescendants=true,ZIndex=12,Parent=sec})
+            -- Clip: sits below header, clips the elems when collapsing
+            local secClip=MakeFrame({
+                Size=UDim2.new(1,0,0,0),
+                Position=UDim2.new(0,0,0,CLIP_TOP),
+                BackgroundTransparency=1,ClipsDescendants=true,
+                ZIndex=12,Parent=sec})
 
+            -- Inner frame: auto-sizes to its children
             local elems=Instance.new("Frame")
             elems.Name="Elems"; elems.Size=UDim2.new(1,0,0,0)
             elems.AutomaticSize=Enum.AutomaticSize.Y
             elems.BackgroundTransparency=1; elems.BorderSizePixel=0
             elems.ZIndex=13; elems.Parent=secClip
-            local eLL=Instance.new("UIListLayout"); eLL.SortOrder=Enum.SortOrder.LayoutOrder
-            eLL.Parent=elems
-            local ePd=Instance.new("UIPadding"); ePd.PaddingBottom=UDim.new(0,6); ePd.Parent=elems
+            local eLL=Instance.new("UIListLayout")
+            eLL.SortOrder=Enum.SortOrder.LayoutOrder; eLL.Parent=elems
+            local ePd=Instance.new("UIPadding")
+            ePd.PaddingBottom=UDim.new(0,6); ePd.Parent=elems
 
-            -- Collapse/expand logic
-            local secExpanded=true
+            -- Helper: set the outer sec height = header + clip height
+            local function setSectionHeight(clipH)
+                sec.Size = UDim2.new(1,0,0, CLIP_TOP + clipH)
+            end
+
+            local secExpanded = false  -- start collapsed; expand after first layout
+
             local function secExpand()
-                secExpanded=true
-                task.wait()
-                local h=elems.AbsoluteSize.Y
-                TweenSine(secClip,{Size=UDim2.new(1,0,0,h)},0.2)
-                Tween(secArrow,{Rotation=90},0.18)
-                secDiv.Visible=true
+                secExpanded = true
+                secDiv.Visible = true
+                Tween(secArrow, {Rotation=-90}, 0.18)
+                task.wait()   -- let elems layout settle
+                local contentH = elems.AbsoluteSize.Y
+                TweenSine(secClip, {Size=UDim2.new(1,0,0,contentH)}, 0.2)
+                -- Drive outer frame height in sync
+                local startH = sec.Size.Y.Offset
+                local targetH = CLIP_TOP + contentH
+                local steps = 10
+                for i=1,steps do
+                    task.wait(0.02)
+                    if not secExpanded then break end
+                    local t = i/steps
+                    sec.Size = UDim2.new(1,0,0, math.floor(startH + (targetH-startH)*t + 0.5))
+                end
+                if secExpanded then sec.Size = UDim2.new(1,0,0, targetH) end
             end
+
             local function secCollapse()
-                secExpanded=false
-                TweenSine(secClip,{Size=UDim2.new(1,0,0,0)},0.18)
-                Tween(secArrow,{Rotation=0},0.18)
-                secDiv.Visible=false
+                secExpanded = false
+                secDiv.Visible = false
+                Tween(secArrow, {Rotation=0}, 0.18)
+                TweenSine(secClip, {Size=UDim2.new(1,0,0,0)}, 0.18)
+                local startH = sec.Size.Y.Offset
+                local targetH = HDR_H
+                local steps = 9
+                for i=1,steps do
+                    task.wait(0.02)
+                    if secExpanded then break end
+                    local t = i/steps
+                    sec.Size = UDim2.new(1,0,0, math.floor(startH + (targetH-startH)*t + 0.5))
+                end
+                if not secExpanded then sec.Size = UDim2.new(1,0,0, targetH) end
             end
-            -- Start expanded; open on first layout
+
+            -- Expand once on first layout
             task.spawn(secExpand)
+
             secHdrBtn.MouseButton1Click:Connect(function()
-                if secExpanded then secCollapse() else task.spawn(secExpand) end
+                if secExpanded then task.spawn(secCollapse) else task.spawn(secExpand) end
             end)
-            secHdrBtn.MouseEnter:Connect(function() Tween(secArrow,{TextTransparency=0},0.1) end)
-            secHdrBtn.MouseLeave:Connect(function() Tween(secArrow,{TextTransparency=0.3},0.1) end)
-            -- Remeasure clip when contents change size
+            secHdrBtn.MouseEnter:Connect(function()
+                Tween(secArrow,{TextTransparency=0},0.1)
+            end)
+            secHdrBtn.MouseLeave:Connect(function()
+                Tween(secArrow,{TextTransparency=0.3},0.1)
+            end)
+
+            -- When content changes (elements added/removed), resize if expanded
             eLL:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
                 if secExpanded then
                     task.wait()
-                    secClip.Size=UDim2.new(1,0,0,elems.AbsoluteSize.Y)
+                    local contentH = elems.AbsoluteSize.Y
+                    secClip.Size = UDim2.new(1,0,0, contentH)
+                    sec.Size     = UDim2.new(1,0,0, CLIP_TOP + contentH)
                 end
             end)
 
             local Sec={}
             local function AE(f) f.LayoutOrder=#elems:GetChildren(); f.Parent=elems end
+
+            -- Expose rename for the section header label
+            function Sec:SetName(newName)
+                secHdr.Text = newName
+            end
 
             -- ── BUTTON ──────────────────────────────────────
             function Sec:AddButton(o)
@@ -1547,78 +1607,99 @@ function NexusLib:CreateWindow(opts)
                     end
                 end)
 
+                -- Debounce so rapid clicks can't double-fire open/close
+                local _busy = false
+                local function _withDebounce(fn)
+                    if _busy then return end
+                    _busy = true
+                    fn()
+                    task.delay(0.25, function() _busy = false end)
+                end
+
                 function Drop:Open()
-                    open=true
-                    -- switch tbox to search mode
-                    tbox.TextEditable=true; tbox.Text=""
-                    tbox.TextColor3=theme.TextPrimary
-                    tbox:CaptureFocus()
+                    open = true
+                    tbox.TextEditable = true
+                    tbox.Text = ""
+                    tbox.TextColor3 = theme.TextPrimary
                     Populate("")
-                    Tween(arrow,{Rotation=-90},0.18)
-                    Tween(wStroke,{Color=theme.Accent,Thickness=1.5},0.15)
-                    -- READ POSITION NOW (after layout is resolved)
-                    local ap=widgetHolder.AbsolutePosition
-                    local as=widgetHolder.AbsoluteSize
-                    local w=as.X
-                    local listH=math.min(#items,6)*28+6
-                    if listH<6 then listH=6 end
-                    local screenH=workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize.Y or 800
-                    local spaceBelow=screenH-(ap.Y+as.Y)
-                    local posY
-                    if spaceBelow>=listH then
-                        posY=ap.Y+as.Y+2
-                    else
-                        posY=ap.Y-listH-2
+                    Tween(arrow, {Rotation=-90}, 0.18)
+                    Tween(wStroke, {Color=theme.Accent, Thickness=1.5}, 0.15)
+                    -- Read absolute position NOW (layout already resolved on screen)
+                    -- Use bg position+size so the list is full element width
+                    local ap = bg.AbsolutePosition
+                    local as = bg.AbsoluteSize
+                    local w  = as.X
+                    local listH = math.min(#items, 6) * 28 + 6
+                    if listH < 6 then listH = 6 end
+                    -- Always open BELOW the element; clamp to screen bottom
+                    local screenH = workspace.CurrentCamera
+                        and workspace.CurrentCamera.ViewportSize.Y or 800
+                    local posY = ap.Y + as.Y + 2
+                    if posY + listH > screenH - 4 then
+                        posY = ap.Y - listH - 2   -- flip above only if truly no room
                     end
-                    listOuter.Size=UDim2.new(0,w,0,0)
-                    listOuter.Position=UDim2.new(0,ap.X,0,posY)
-                    listOuter.Visible=true
-                    TweenSine(listOuter,{Size=UDim2.new(0,w,0,listH)},0.2)
+                    listOuter.Size     = UDim2.new(0, w, 0, 0)
+                    listOuter.Position = UDim2.new(0, ap.X, 0, posY)
+                    listOuter.Visible  = true
+                    TweenSine(listOuter, {Size=UDim2.new(0, w, 0, listH)}, 0.2)
+                    task.delay(0.05, function()
+                        if open then tbox:CaptureFocus() end
+                    end)
                 end
 
                 function Drop:Close()
-                    open=false
-                    tbox.TextEditable=false
-                    tbox.Text=selected~=nil and tostring(selected) or "Select..."
-                    tbox.TextColor3=selected~=nil and theme.Accent or theme.TextSecondary
-                    tbox:ReleaseFocus()
-                    Tween(arrow,{Rotation=0},0.15)
-                    Tween(wStroke,{Color=theme.Border,Thickness=1},0.15)
-                    TweenSine(listOuter,{Size=UDim2.new(0,listOuter.AbsoluteSize.X,0,0)},0.15)
-                    task.delay(0.16,function() listOuter.Visible=false end)
+                    open = false
+                    tbox.TextEditable = false
+                    tbox.Text = selected ~= nil and tostring(selected) or "Select..."
+                    tbox.TextColor3 = selected ~= nil and theme.Accent or theme.TextSecondary
+                    pcall(function() tbox:ReleaseFocus() end)
+                    Tween(arrow, {Rotation=0}, 0.15)
+                    Tween(wStroke, {Color=theme.Border, Thickness=1}, 0.15)
+                    local w = listOuter.AbsoluteSize.X
+                    TweenSine(listOuter, {Size=UDim2.new(0, w, 0, 0)}, 0.15)
+                    task.delay(0.16, function() listOuter.Visible = false end)
                 end
 
                 function Drop:Set(v)
-                    selected=v
+                    selected = v
                     if not open then
-                        tbox.Text=v~=nil and tostring(v) or "Select..."
-                        tbox.TextColor3=v~=nil and theme.Accent or theme.TextSecondary
+                        tbox.Text = v ~= nil and tostring(v) or "Select..."
+                        tbox.TextColor3 = v ~= nil and theme.Accent or theme.TextSecondary
                     end
-                    if flag then NexusLib.Flags[flag]=v end
+                    if flag then NexusLib.Flags[flag] = v end
                 end
                 function Drop:Get() return selected end
-                function Drop:SetItems(i) items=i end
-                function Drop:SetCallback(f) cb=f end
-                if flag then NexusLib.Options[flag]=Drop end
+                function Drop:SetItems(i) items = i end
+                function Drop:SetCallback(f) cb = f end
+                if flag then NexusLib.Options[flag] = Drop end
 
-                -- Click catcher opens/closes
+                -- Single click handler — debounced toggle
                 clickCatch.MouseButton1Click:Connect(function()
-                    if open then Drop:Close() else Drop:Open() end
+                    _withDebounce(function()
+                        if open then Drop:Close() else Drop:Open() end
+                    end)
                 end)
-                -- Also allow clicking on the tbox label area to open (when closed)
+                -- tbox.Focused fires when CaptureFocus succeeds inside Open —
+                -- do NOT re-open here; only open if we weren't already open
                 tbox.Focused:Connect(function()
-                    if not open then Drop:Open() end
+                    if not open then
+                        _withDebounce(function() Drop:Open() end)
+                    end
                 end)
-                -- Outside click closes
+                -- Outside-click closes
                 AddConn(UserInputService.InputBegan:Connect(function(i)
-                    if open and i.UserInputType==Enum.UserInputType.MouseButton1 then
+                    if open and i.UserInputType == Enum.UserInputType.MouseButton1 then
                         task.defer(function()
                             if not widgetHolder:IsDescendantOf(gui) then return end
-                            local mp=UserInputService:GetMouseLocation()
-                            local lp=listOuter.AbsolutePosition; local ls=listOuter.AbsoluteSize
-                            local wp=widgetHolder.AbsolutePosition; local ws=widgetHolder.AbsoluteSize
-                            local inList=mp.X>=lp.X and mp.X<=lp.X+ls.X and mp.Y>=lp.Y and mp.Y<=lp.Y+ls.Y
-                            local inWidget=mp.X>=wp.X and mp.X<=wp.X+ws.X and mp.Y>=wp.Y and mp.Y<=wp.Y+ws.Y
+                            local mp = UserInputService:GetMouseLocation()
+                            local lp = listOuter.AbsolutePosition
+                            local ls = listOuter.AbsoluteSize
+                            local wp = widgetHolder.AbsolutePosition
+                            local ws = widgetHolder.AbsoluteSize
+                            local inList   = mp.X>=lp.X and mp.X<=lp.X+ls.X
+                                         and mp.Y>=lp.Y and mp.Y<=lp.Y+ls.Y
+                            local inWidget = mp.X>=wp.X and mp.X<=wp.X+ws.X
+                                         and mp.Y>=wp.Y and mp.Y<=wp.Y+ws.Y
                             if not inList and not inWidget then Drop:Close() end
                         end)
                     end
