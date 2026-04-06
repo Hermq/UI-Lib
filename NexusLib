@@ -1430,72 +1430,69 @@ function NexusLib:CreateWindow(opts)
             function Sec:AddDropdown(o)
                 local n=o.Name or "Dropdown"; local items=o.Items or {}; local def=o.Default
                 local flag=o.Flag; local cb=o.Callback or function()end
-                local selected=def; local open=false; local searchText=""
+                local selected=def; local open=false
                 if flag then NexusLib.Flags[flag]=selected end
 
-                -- Outer row (full width) — this is what we anchor the list under
-                local row=MakeFrame({Size=UDim2.new(1,0,0,36),BackgroundTransparency=1,ZIndex=14})
+                -- Row: full section width, fixed height
+                local ROW_H=36
+                local row=MakeFrame({Size=UDim2.new(1,0,0,ROW_H),BackgroundTransparency=1,ZIndex=14})
                 local bg=MakeFrame({Size=UDim2.new(1,-16,0,32),Position=UDim2.new(0,8,0,2),
                     ZIndex=14,Parent=row})
                 R(bg,"BackgroundColor3","ElementBg"); MakeCorner(bg,6); AddGlow(bg,theme)
 
-                -- Label (left half)
-                local nl=MakeLabel({Size=UDim2.new(0.5,0,1,0),Position=UDim2.new(0,10,0,0),
+                -- Left label
+                local nl=MakeLabel({Size=UDim2.new(0.42,0,1,0),Position=UDim2.new(0,10,0,0),
                     Text=n,Font=Enum.Font.Gotham,TextSize=13,
                     TextXAlignment=Enum.TextXAlignment.Left,ZIndex=15,Parent=bg})
                 R(nl,"TextColor3","TextPrimary")
 
-                -- The clickable "selected value" button (right half of bg)
-                local dbtn=Instance.new("TextButton")
-                dbtn.Size=UDim2.new(0.46,0,0,22); dbtn.Position=UDim2.new(0.52,0,0.5,-11)
-                dbtn.Font=Enum.Font.Gotham; dbtn.TextSize=12
-                dbtn.BorderSizePixel=0; dbtn.ZIndex=15; dbtn.AutoButtonColor=false
-                dbtn.Parent=bg; dbtn.ClipsDescendants=false
-                R(dbtn,"BackgroundColor3","TertiaryBg"); R(dbtn,"TextColor3","TextSecondary")
-                MakeCorner(dbtn,5); AddHoverScale(dbtn); AddPressScale(dbtn)
+                -- Right combined widget: a TextBox for search / display, arrow button
+                local RIGHT_W=0.55  -- fraction of bg width
+                local RIGHT_OFF=0.43
+                local widgetHolder=MakeFrame({Size=UDim2.new(RIGHT_W,0,0,24),
+                    Position=UDim2.new(RIGHT_OFF,0,0.5,-12),
+                    ZIndex=15,Parent=bg})
+                R(widgetHolder,"BackgroundColor3","TertiaryBg"); MakeCorner(widgetHolder,5)
+                local wStroke=MakeStroke(widgetHolder,theme.Border,1)
 
-                -- Selected text label (left of arrow inside dbtn)
-                local selLbl=MakeLabel({Size=UDim2.new(1,-22,1,0),Position=UDim2.new(0,6,0,0),
-                    Text=selected or "Select...",Font=Enum.Font.Gotham,TextSize=12,
-                    TextTruncate=Enum.TextTruncate.AtEnd,
-                    TextXAlignment=Enum.TextXAlignment.Left,ZIndex=16,Parent=dbtn})
-                R(selLbl,"TextColor3","TextSecondary")
+                -- TextBox doubles as search when open, and shows selected when closed
+                local tbox=Instance.new("TextBox")
+                tbox.Size=UDim2.new(1,-24,1,0); tbox.Position=UDim2.new(0,6,0,0)
+                tbox.BackgroundTransparency=1; tbox.BorderSizePixel=0
+                tbox.Font=Enum.Font.Gotham; tbox.TextSize=12
+                tbox.TextXAlignment=Enum.TextXAlignment.Left
+                tbox.ClearTextOnFocus=false; tbox.TextEditable=false
+                tbox.ZIndex=16; tbox.Parent=widgetHolder
+                tbox.Text=selected~=nil and tostring(selected) or "Select..."
+                tbox.TextColor3=selected~=nil and theme.Accent or theme.TextSecondary
+                tbox.PlaceholderText="Search..."; tbox.PlaceholderColor3=theme.TextDim
 
-                -- Arrow: ◀ closed → rotates -90° to point down when open
-                local arrow=MakeLabel({Size=UDim2.new(0,18,1,0),Position=UDim2.new(1,-20,0,0),
-                    Text="◀",TextSize=11,Font=Enum.Font.GothamBold,ZIndex=16,Parent=dbtn})
+                -- Arrow indicator
+                local arrow=MakeLabel({Size=UDim2.new(0,20,1,0),Position=UDim2.new(1,-22,0,0),
+                    Text="◀",TextSize=10,Font=Enum.Font.GothamBold,ZIndex=16,Parent=widgetHolder})
                 R(arrow,"TextColor3","TextDim")
 
-                -- ── List panel (parented to gui so it floats above everything) ──
-                local listOuter=MakeFrame({Size=UDim2.new(0,0,0,0),ZIndex=60,
+                -- Invisible click catcher over the whole widget (so clicking anywhere opens it)
+                local clickCatch=Instance.new("TextButton")
+                clickCatch.Size=UDim2.new(1,0,1,0); clickCatch.BackgroundTransparency=1
+                clickCatch.Text=""; clickCatch.BorderSizePixel=0; clickCatch.ZIndex=17
+                clickCatch.AutoButtonColor=false; clickCatch.Parent=widgetHolder
+
+                -- ── Floating list ──────────────────────────────
+                local listOuter=MakeFrame({Size=UDim2.new(0,10,0,0),ZIndex=80,
                     Visible=false,ClipsDescendants=true,Parent=gui})
                 MakeCorner(listOuter,6); MakeStroke(listOuter,theme.Border)
                 R(listOuter,"BackgroundColor3","TertiaryBg")
 
-                -- Search box at top of list
-                local searchBox=Instance.new("TextBox")
-                searchBox.Size=UDim2.new(1,0,0,28); searchBox.BackgroundTransparency=0
-                searchBox.PlaceholderText="🔍  Search..."; searchBox.Text=""
-                searchBox.Font=Enum.Font.Gotham; searchBox.TextSize=12
-                searchBox.BorderSizePixel=0; searchBox.ZIndex=62; searchBox.ClearTextOnFocus=false
-                searchBox.Parent=listOuter
-                R(searchBox,"BackgroundColor3","ElementBg"); R(searchBox,"TextColor3","TextPrimary")
-                R(searchBox,"PlaceholderColor3","TextDim")
-                local searchPad=Instance.new("UIPadding"); searchPad.PaddingLeft=UDim.new(0,8)
-                searchPad.PaddingRight=UDim.new(0,8); searchPad.Parent=searchBox
-                local searchDiv=MakeFrame({Size=UDim2.new(1,0,0,1),Position=UDim2.new(0,0,1,-1),
-                    ZIndex=63,Parent=searchBox})
-                R(searchDiv,"BackgroundColor3","Border")
-
-                -- Scrolling list below search
+                -- Scrolling items (no separate search bar — tbox IS the search)
                 local listFrame=Instance.new("ScrollingFrame")
-                listFrame.Size=UDim2.new(1,0,1,-29); listFrame.Position=UDim2.new(0,0,0,29)
+                listFrame.Size=UDim2.new(1,0,1,0)
                 listFrame.ScrollBarThickness=3; listFrame.BorderSizePixel=0
                 listFrame.ScrollingDirection=Enum.ScrollingDirection.Y
                 listFrame.CanvasSize=UDim2.new(0,0,0,0)
                 listFrame.AutomaticCanvasSize=Enum.AutomaticSize.Y
                 listFrame.ClipsDescendants=true; listFrame.BackgroundTransparency=1
-                listFrame.ZIndex=61; listFrame.Parent=listOuter
+                listFrame.ZIndex=81; listFrame.Parent=listOuter
                 R(listFrame,"ScrollBarImageColor3","ScrollBar")
                 local listLL=Instance.new("UIListLayout"); listLL.SortOrder=Enum.SortOrder.LayoutOrder
                 listLL.Parent=listFrame
@@ -1510,85 +1507,119 @@ function NexusLib:CreateWindow(opts)
                         if c:IsA("TextButton") then c:Destroy() end
                     end
                     local fLow=filter:lower()
+                    local count=0
                     for _,item in ipairs(items) do
                         local itemStr=tostring(item)
                         if fLow=="" or itemStr:lower():find(fLow,1,true) then
+                            count=count+1
                             local ib=Instance.new("TextButton")
                             ib.Size=UDim2.new(1,0,0,28); ib.BackgroundColor3=theme.TertiaryBg
-                            ib.Text=" "..itemStr; ib.Font=Enum.Font.Gotham; ib.TextSize=13
+                            ib.Text="  "..itemStr; ib.Font=Enum.Font.Gotham; ib.TextSize=13
                             ib.TextColor3=(item==selected) and theme.Accent or theme.TextSecondary
                             ib.TextXAlignment=Enum.TextXAlignment.Left; ib.BorderSizePixel=0
-                            ib.ZIndex=62; ib.AutoButtonColor=false; ib.Parent=listFrame
+                            ib.ZIndex=82; ib.AutoButtonColor=false; ib.Parent=listFrame
                             ib.MouseEnter:Connect(function() Tween(ib,{BackgroundColor3=theme.ElementHover},0.08) end)
                             ib.MouseLeave:Connect(function() Tween(ib,{BackgroundColor3=theme.TertiaryBg},0.08) end)
                             ib.MouseButton1Click:Connect(function()
                                 selected=item
-                                selLbl.Text=tostring(item); selLbl.TextColor3=theme.Accent
+                                tbox.Text=tostring(item); tbox.TextColor3=theme.Accent
+                                tbox.TextEditable=false
                                 if flag then NexusLib.Flags[flag]=item end
                                 cb(item); Drop:Close()
                             end)
                         end
                     end
+                    return count
                 end
 
-                searchBox:GetPropertyChangedSignal("Text"):Connect(function()
-                    searchText=searchBox.Text; Populate(searchText)
+                -- tbox text changes = live search filter while open
+                tbox:GetPropertyChangedSignal("Text"):Connect(function()
+                    if open and tbox.TextEditable then
+                        Populate(tbox.Text)
+                        -- resize list to match filtered count
+                        local cnt=0
+                        for _,c in pairs(listFrame:GetChildren()) do
+                            if c:IsA("TextButton") then cnt=cnt+1 end
+                        end
+                        local newH=math.min(cnt,6)*28+6
+                        if newH<6 then newH=6 end
+                        TweenSine(listOuter,{Size=UDim2.new(0,listOuter.AbsoluteSize.X,0,newH)},0.12)
+                    end
                 end)
 
                 function Drop:Open()
-                    open=true; searchBox.Text=""; searchText=""; Populate("")
-                    -- Anchor to the bg frame (the full-width element background)
-                    local ap=bg.AbsolutePosition; local as=bg.AbsoluteSize
+                    open=true
+                    -- switch tbox to search mode
+                    tbox.TextEditable=true; tbox.Text=""
+                    tbox.TextColor3=theme.TextPrimary
+                    tbox:CaptureFocus()
+                    Populate("")
+                    Tween(arrow,{Rotation=-90},0.18)
+                    Tween(wStroke,{Color=theme.Accent,Thickness=1.5},0.15)
+                    -- READ POSITION NOW (after layout is resolved)
+                    local ap=widgetHolder.AbsolutePosition
+                    local as=widgetHolder.AbsoluteSize
                     local w=as.X
-                    local SEARCH_H=29
-                    local itemCount=math.min(#items,6)
-                    local listH=itemCount*28+6
-                    local totalH=SEARCH_H+listH
+                    local listH=math.min(#items,6)*28+6
+                    if listH<6 then listH=6 end
                     local screenH=workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize.Y or 800
                     local spaceBelow=screenH-(ap.Y+as.Y)
-                    local posY=spaceBelow>=totalH and (ap.Y+as.Y+2) or (ap.Y-totalH-2)
+                    local posY
+                    if spaceBelow>=listH then
+                        posY=ap.Y+as.Y+2
+                    else
+                        posY=ap.Y-listH-2
+                    end
                     listOuter.Size=UDim2.new(0,w,0,0)
                     listOuter.Position=UDim2.new(0,ap.X,0,posY)
                     listOuter.Visible=true
-                    TweenSine(listOuter,{Size=UDim2.new(0,w,0,totalH)},0.2)
-                    -- ◀ rotates -90° → points downward
-                    Tween(arrow,{Rotation=-90},0.2)
-                    task.delay(0.05,function() searchBox:CaptureFocus() end)
+                    TweenSine(listOuter,{Size=UDim2.new(0,w,0,listH)},0.2)
                 end
+
                 function Drop:Close()
                     open=false
-                    TweenSine(listOuter,{Size=UDim2.new(0,listOuter.Size.X.Offset,0,0)},0.15)
-                    task.delay(0.16,function() listOuter.Visible=false end)
+                    tbox.TextEditable=false
+                    tbox.Text=selected~=nil and tostring(selected) or "Select..."
+                    tbox.TextColor3=selected~=nil and theme.Accent or theme.TextSecondary
+                    tbox:ReleaseFocus()
                     Tween(arrow,{Rotation=0},0.15)
-                    searchBox:ReleaseFocus()
+                    Tween(wStroke,{Color=theme.Border,Thickness=1},0.15)
+                    TweenSine(listOuter,{Size=UDim2.new(0,listOuter.AbsoluteSize.X,0,0)},0.15)
+                    task.delay(0.16,function() listOuter.Visible=false end)
                 end
+
                 function Drop:Set(v)
                     selected=v
-                    selLbl.Text=v~=nil and tostring(v) or "Select..."
-                    selLbl.TextColor3=v~=nil and theme.Accent or theme.TextSecondary
+                    if not open then
+                        tbox.Text=v~=nil and tostring(v) or "Select..."
+                        tbox.TextColor3=v~=nil and theme.Accent or theme.TextSecondary
+                    end
                     if flag then NexusLib.Flags[flag]=v end
                 end
                 function Drop:Get() return selected end
                 function Drop:SetItems(i) items=i end
                 function Drop:SetCallback(f) cb=f end
                 if flag then NexusLib.Options[flag]=Drop end
-                -- Apply default display
-                if selected~=nil then
-                    selLbl.Text=tostring(selected); selLbl.TextColor3=theme.Accent
-                end
-                dbtn.MouseButton1Click:Connect(function()
+
+                -- Click catcher opens/closes
+                clickCatch.MouseButton1Click:Connect(function()
                     if open then Drop:Close() else Drop:Open() end
                 end)
+                -- Also allow clicking on the tbox label area to open (when closed)
+                tbox.Focused:Connect(function()
+                    if not open then Drop:Open() end
+                end)
+                -- Outside click closes
                 AddConn(UserInputService.InputBegan:Connect(function(i)
                     if open and i.UserInputType==Enum.UserInputType.MouseButton1 then
                         task.defer(function()
-                            if not dbtn:IsDescendantOf(gui) then return end
+                            if not widgetHolder:IsDescendantOf(gui) then return end
                             local mp=UserInputService:GetMouseLocation()
                             local lp=listOuter.AbsolutePosition; local ls=listOuter.AbsoluteSize
-                            local dbp=dbtn.AbsolutePosition; local dbs=dbtn.AbsoluteSize
+                            local wp=widgetHolder.AbsolutePosition; local ws=widgetHolder.AbsoluteSize
                             local inList=mp.X>=lp.X and mp.X<=lp.X+ls.X and mp.Y>=lp.Y and mp.Y<=lp.Y+ls.Y
-                            local inBtn=mp.X>=dbp.X and mp.X<=dbp.X+dbs.X and mp.Y>=dbp.Y and mp.Y<=dbp.Y+dbs.Y
-                            if not inList and not inBtn then Drop:Close() end
+                            local inWidget=mp.X>=wp.X and mp.X<=wp.X+ws.X and mp.Y>=wp.Y and mp.Y<=wp.Y+ws.Y
+                            if not inList and not inWidget then Drop:Close() end
                         end)
                     end
                 end))
