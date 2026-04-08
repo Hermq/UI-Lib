@@ -549,7 +549,7 @@ local function _attachAccordionElements(obj, inner, theme, onAdd, selfDepth)
         end
         AddConn(track.InputBegan:Connect(function(i)
             if i.UserInputType==Enum.UserInputType.MouseButton1 then
-                sliding=true; doSlide(i.Position.X)
+                sliding=true; doSlide(UserInputService:GetMouseLocation().X)
                 TweenSpring(thumb,{Size=UDim2.new(0,16,0,16)},0.2)
             end
         end))
@@ -1384,7 +1384,7 @@ function NexusLib:CreateWindow(opts)
                 end
                 AddConn(track.InputBegan:Connect(function(i)
                     if i.UserInputType==Enum.UserInputType.MouseButton1 then
-                        sliding=true; DoSlide(i.Position.X)
+                        sliding=true; DoSlide(UserInputService:GetMouseLocation().X)
                         TweenSpring(thumb,{Size=UDim2.new(0,16,0,16)},0.2)
                     end
                 end))
