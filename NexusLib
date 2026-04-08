@@ -1370,20 +1370,23 @@ function NexusLib:CreateWindow(opts)
 
                 -- FIX: global InputBegan with bounds check replaces track.InputBegan
                 -- ±8 px vertical tolerance makes the thin track much easier to click
-                AddConn(UserInputService.InputBegan:Connect(function(i)
-                    if i.UserInputType == Enum.UserInputType.MouseButton1 then
-                        local mp = UserInputService:GetMouseLocation()
-                        local ap = track.AbsolutePosition
-                        local as = track.AbsoluteSize
-                        if mp.X >= ap.X and mp.X <= ap.X + as.X
-                        and mp.Y >= ap.Y - 8 and mp.Y <= ap.Y + as.Y + 8 then
-                            sliding = true
-                            slideFromX(mp.X)
-                            TweenSpring(thumb, {Size = UDim2.new(0,18,0,18)}, 0.1)
-                        end
-                    end
-                end))
+                local dragBtn = Instance.new("TextButton")
+                dragBtn.Size = UDim2.new(1,-20,0,24)   -- tall hit area centred on track
+                dragBtn.Position = UDim2.new(0,10,0,24)
+                dragBtn.BackgroundTransparency = 1
+                dragBtn.Text = ""; dragBtn.BorderSizePixel = 0
+                dragBtn.ZIndex = 18; dragBtn.AutoButtonColor = false
+                dragBtn.Parent = bg
 
+                dragBtn.InputBegan:Connect(function(i)
+                    if i.UserInputType == Enum.UserInputType.MouseButton1 then
+                        sliding = true
+                        slideFromX(UserInputService:GetMouseLocation().X)
+                        TweenSpring(thumb, {Size = UDim2.new(0,18,0,18)}, 0.1)
+                    end
+                end)
+
+                -- Global move/end still needed to track drag outside the button
                 AddConn(UserInputService.InputChanged:Connect(function(i)
                     if sliding and i.UserInputType == Enum.UserInputType.MouseMovement then
                         slideFromX(UserInputService:GetMouseLocation().X)
