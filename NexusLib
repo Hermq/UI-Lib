@@ -1287,13 +1287,14 @@ function NexusLib:CreateWindow(opts)
             -- ── SLIDER (with Polarity support) ───────────────
             function Sec:AddSlider(o)
                 local n = o.Name or "Slider"
-                local prec = o.Precision or 0
-                local sfx = o.Suffix or ""
-                local flag = o.Flag
-                local cb = o.Callback or function() end
                 local smin = o.Min or 0
                 local smax = o.Max or 100
                 local def = o.Default or smin
+                local sfx = o.Suffix or ""
+                local prec = o.Precision or 0
+                local flag = o.Flag
+                local cb = o.Callback or function() end
+
                 local val = math.clamp(def, smin, smax)
                 if flag then NexusLib.Flags[flag] = val end
 
@@ -1306,12 +1307,11 @@ function NexusLib:CreateWindow(opts)
                 R(nl,"TextColor3","TextPrimary")
 
                 local vbox = Instance.new("TextBox")
-                vbox.Size = UDim2.new(0,70,0,22); vbox.Position = UDim2.new(1,-78,0,6)
+                vbox.Size = UDim2.new(0,72,0,22); vbox.Position = UDim2.new(1,-80,0,6)
                 vbox.BackgroundColor3 = theme.TertiaryBg; vbox.TextColor3 = theme.Accent
                 vbox.Font = Enum.Font.GothamBold; vbox.TextSize = 12
                 vbox.TextXAlignment = Enum.TextXAlignment.Center
-                vbox.ClearTextOnFocus = true
-                vbox.ZIndex = 15; vbox.Parent = bg
+                vbox.ClearTextOnFocus = true; vbox.ZIndex = 15; vbox.Parent = bg
                 MakeCorner(vbox,4)
 
                 local track = MakeFrame({Size=UDim2.new(1,-20,0,6), Position=UDim2.new(0,10,0,34), ZIndex=15, Parent=bg})
@@ -1330,7 +1330,7 @@ function NexusLib:CreateWindow(opts)
                     local p = (smax > smin) and math.clamp((val - smin) / (smax - smin), 0, 1) or 0
                     fill.Size = UDim2.new(p, 0, 1, 0)
                     thumb.Position = UDim2.new(p, -7, 0.5, -7)
-                    vbox.Text = prec == 0 and tostring(math.floor(val + 0.5)) .. sfx or string.format("%."..prec.."f", val) .. sfx
+                    vbox.Text = (prec == 0 and tostring(math.floor(val + 0.5)) or string.format("%."..prec.."f", val)) .. sfx
                 end
 
                 local function setValue(v, fire)
@@ -1342,7 +1342,6 @@ function NexusLib:CreateWindow(opts)
 
                 updateVisuals()
 
-                -- Click + drag
                 track.InputBegan:Connect(function(i)
                     if i.UserInputType == Enum.UserInputType.MouseButton1 then
                         sliding = true
