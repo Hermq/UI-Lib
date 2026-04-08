@@ -1319,7 +1319,7 @@ function NexusLib:CreateWindow(opts)
                 local row = MakeFrame({Size=UDim2.new(1,0,0,54), BackgroundTransparency=1, ZIndex=14})
                 local bg = MakeFrame({Size=UDim2.new(1,-16,0,48), Position=UDim2.new(0,8,0,2), ZIndex=14, Parent=row})
                 R(bg,"BackgroundColor3","ElementBg"); MakeCorner(bg,6)
-                AddHoverScale(bg); AddGlow(bg,theme)
+                AddGlow(bg, theme)
 
                 local nl = MakeLabel({Size=UDim2.new(0.65,0,0,20), Position=UDim2.new(0,10,0,6), Text=n, Font=Enum.Font.Gotham, TextSize=13, TextXAlignment=Enum.TextXAlignment.Left, ZIndex=15, Parent=bg})
                 R(nl,"TextColor3","TextPrimary")
