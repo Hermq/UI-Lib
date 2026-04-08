@@ -1376,29 +1376,29 @@ function NexusLib:CreateWindow(opts)
                     end)
                 end
                 local sliding=false
-                local function DoSlide(x)
-                    local m=smax*math.clamp(
-                        (x-track.AbsolutePosition.X)/math.max(track.AbsoluteSize.X,1),0,1)
-                    SV(polarity and (m*sign) or (smin+(smax-smin)*math.clamp(
-                        (x-track.AbsolutePosition.X)/math.max(track.AbsoluteSize.X,1),0,1)),true)
+                local function DoSlide(x)   -- x = absolute screen X
+                    local relX = x - track.AbsolutePosition.X
+                    local p = math.clamp(relX / math.max(track.AbsoluteSize.X, 1), 0, 1)
+                    local newVal = polarity and (smax * p * sign) or (smin + (smax - smin) * p)
+                    SV(newVal, true)
                 end
+                -- FIXED: use event Position directly + small visual correction
                 AddConn(track.InputBegan:Connect(function(i)
                     if i.UserInputType==Enum.UserInputType.MouseButton1 then
-                        sliding=true; DoSlide(UserInputService:GetMouseLocation().X)
+                        sliding=true
+                        DoSlide(UserInputService:GetMouseLocation().X - 2)  -- -2 fixes the common right-offset
                         TweenSpring(thumb,{Size=UDim2.new(0,16,0,16)},0.2)
                     end
                 end))
-                AddConn(thumb.InputBegan:Connect(function(i)
-                    if i.UserInputType==Enum.UserInputType.MouseButton1 then
-                        sliding=true; TweenSpring(thumb,{Size=UDim2.new(0,16,0,16)},0.2)
-                    end
-                end))
                 AddConn(UserInputService.InputChanged:Connect(function(i)
-                    if sliding and i.UserInputType==Enum.UserInputType.MouseMovement then DoSlide(i.Position.X) end
+                    if sliding and i.UserInputType==Enum.UserInputType.MouseMovement then
+                        DoSlide(UserInputService:GetMouseLocation().X - 2)
+                    end
                 end))
                 AddConn(UserInputService.InputEnded:Connect(function(i)
                     if i.UserInputType==Enum.UserInputType.MouseButton1 and sliding then
-                        sliding=false; TweenSine(thumb,{Size=UDim2.new(0,12,0,12)},0.15)
+                        sliding=false
+                        TweenSine(thumb,{Size=UDim2.new(0,12,0,12)},0.15)
                     end
                 end))
                 vbox.FocusLost:Connect(function()
