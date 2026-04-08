@@ -420,7 +420,7 @@ function NexusLib:Prompt(opts)
 end
 
 -- ═══════════════════════════════════════════════════════════
---  ACCORDION SYSTEM (v2.4 — unchanged)
+--  ACCORDION SYSTEM (v2.4 — unchanged except slider fix)
 -- ═══════════════════════════════════════════════════════════
 
 local function _attachAccordionElements(obj, inner, theme, onAdd, selfDepth)
@@ -544,17 +544,31 @@ local function _attachAccordionElements(obj, inner, theme, onAdd, selfDepth)
         SV(val,false)
         local sliding=false
         local function doSlide(x)
-            local p=math.clamp((x-track.AbsolutePosition.X)/math.max(track.AbsoluteSize.X,1),0,1)
+            local ap = track.AbsolutePosition
+            local as = track.AbsoluteSize
+            local p=math.clamp((x - ap.X) / math.max(as.X, 1), 0, 1)
             SV(smin+(smax-smin)*p,true)
         end
-        AddConn(track.InputBegan:Connect(function(i)
-            if i.UserInputType==Enum.UserInputType.MouseButton1 then
-                sliding=true; doSlide(UserInputService:GetMouseLocation().X)
-                TweenSpring(thumb,{Size=UDim2.new(0,16,0,16)},0.2)
+        -- FIX: use global UIS.InputBegan with bounds check instead of track.InputBegan
+        -- (a 6-pixel-tall Frame is too thin to reliably receive GUI InputBegan events)
+        AddConn(UserInputService.InputBegan:Connect(function(i)
+            if i.UserInputType == Enum.UserInputType.MouseButton1 then
+                local mp = UserInputService:GetMouseLocation()
+                local ap = track.AbsolutePosition
+                local as = track.AbsoluteSize
+                -- generous ±8 px vertical padding so the thin track is easy to click
+                if mp.X >= ap.X and mp.X <= ap.X + as.X
+                and mp.Y >= ap.Y - 8 and mp.Y <= ap.Y + as.Y + 8 then
+                    sliding = true
+                    doSlide(mp.X)
+                    TweenSpring(thumb, {Size=UDim2.new(0,16,0,16)}, 0.2)
+                end
             end
         end))
         AddConn(UserInputService.InputChanged:Connect(function(i)
-            if sliding and i.UserInputType==Enum.UserInputType.MouseMovement then doSlide(i.Position.X) end
+            if sliding and i.UserInputType==Enum.UserInputType.MouseMovement then
+                doSlide(UserInputService:GetMouseLocation().X)
+            end
         end))
         AddConn(UserInputService.InputEnded:Connect(function(i)
             if i.UserInputType==Enum.UserInputType.MouseButton1 and sliding then
@@ -1284,7 +1298,11 @@ function NexusLib:CreateWindow(opts)
                 AE(row); return Tog
             end
 
-            -- ── SLIDER (with Polarity support) ───────────────
+            -- ── SLIDER ──────────────────────────────────────
+            -- FIX: replaced track.InputBegan (unreliable on a 6 px tall Frame) with a
+            -- global UserInputService.InputBegan that does a bounds check against the
+            -- track's AbsolutePosition.  All three UIS connections are now wrapped in
+            -- AddConn so they are properly cleaned up on NexusLib:Destroy().
             function Sec:AddSlider(o)
                 local n = o.Name or "Slider"
                 local smin = o.Min or 0
@@ -1342,30 +1360,42 @@ function NexusLib:CreateWindow(opts)
 
                 updateVisuals()
 
-                track.InputBegan:Connect(function(i)
-                    if i.UserInputType == Enum.UserInputType.MouseButton1 then
-                        sliding = true
-                        local mouseX = UserInputService:GetMouseLocation().X
-                        local p = math.clamp((mouseX - track.AbsolutePosition.X) / math.max(track.AbsoluteSize.X, 1), 0, 1)
-                        setValue(smin + (smax - smin) * p, true)
-                        TweenSpring(thumb, {Size = UDim2.new(0,18,0,18)}, 0.1)
-                    end
-                end)
+                -- Helper: compute slider value from an absolute screen X coordinate
+                local function slideFromX(screenX)
+                    local ap = track.AbsolutePosition
+                    local as = track.AbsoluteSize
+                    local p = math.clamp((screenX - ap.X) / math.max(as.X, 1), 0, 1)
+                    setValue(smin + (smax - smin) * p, true)
+                end
 
-                UserInputService.InputChanged:Connect(function(i)
+                -- FIX: global InputBegan with bounds check replaces track.InputBegan
+                -- ±8 px vertical tolerance makes the thin track much easier to click
+                AddConn(UserInputService.InputBegan:Connect(function(i)
+                    if i.UserInputType == Enum.UserInputType.MouseButton1 then
+                        local mp = UserInputService:GetMouseLocation()
+                        local ap = track.AbsolutePosition
+                        local as = track.AbsoluteSize
+                        if mp.X >= ap.X and mp.X <= ap.X + as.X
+                        and mp.Y >= ap.Y - 8 and mp.Y <= ap.Y + as.Y + 8 then
+                            sliding = true
+                            slideFromX(mp.X)
+                            TweenSpring(thumb, {Size = UDim2.new(0,18,0,18)}, 0.1)
+                        end
+                    end
+                end))
+
+                AddConn(UserInputService.InputChanged:Connect(function(i)
                     if sliding and i.UserInputType == Enum.UserInputType.MouseMovement then
-                        local mouseX = UserInputService:GetMouseLocation().X
-                        local p = math.clamp((mouseX - track.AbsolutePosition.X) / math.max(track.AbsoluteSize.X, 1), 0, 1)
-                        setValue(smin + (smax - smin) * p, true)
+                        slideFromX(UserInputService:GetMouseLocation().X)
                     end
-                end)
+                end))
 
-                UserInputService.InputEnded:Connect(function(i)
-                    if i.UserInputType == Enum.UserInputType.MouseButton1 then
+                AddConn(UserInputService.InputEnded:Connect(function(i)
+                    if i.UserInputType == Enum.UserInputType.MouseButton1 and sliding then
                         sliding = false
                         TweenSine(thumb, {Size = UDim2.new(0,14,0,14)}, 0.15)
                     end
-                end)
+                end))
 
                 vbox.FocusLost:Connect(function()
                     local num = tonumber(vbox.Text)
