@@ -1291,41 +1291,30 @@ function NexusLib:CreateWindow(opts)
                 local sfx = o.Suffix or ""
                 local flag = o.Flag
                 local cb = o.Callback or function() end
-                local free = o.FreeInput or false
-                local polarity = o.Polarity or false
-
-                local smin = polarity and 0 or (o.Min or 0)
+                local smin = o.Min or 0
                 local smax = o.Max or 100
                 local def = o.Default or smin
-
-                local sign = (def < 0) and -1 or 1
-                local mag = math.abs(def)
-                if not polarity then 
-                    mag = math.clamp(def, smin, smax)
-                    sign = 1 
-                end
-                local val = polarity and (mag * sign) or mag
+                local val = math.clamp(def, smin, smax)
                 if flag then NexusLib.Flags[flag] = val end
 
-                local bgH  = polarity and 82 or 54
-                local rowH = polarity and 86 or 58
-
-                local row = MakeFrame({Size=UDim2.new(1,0,0,rowH), BackgroundTransparency=1, ZIndex=14})
-                local bg = MakeFrame({Size=UDim2.new(1,-16,0,bgH), Position=UDim2.new(0,8,0,2), ZIndex=14, Parent=row})
+                local row = MakeFrame({Size=UDim2.new(1,0,0,54), BackgroundTransparency=1, ZIndex=14})
+                local bg = MakeFrame({Size=UDim2.new(1,-16,0,48), Position=UDim2.new(0,8,0,2), ZIndex=14, Parent=row})
                 R(bg,"BackgroundColor3","ElementBg"); MakeCorner(bg,6)
                 AddHoverScale(bg); AddGlow(bg,theme)
 
-                local nl = MakeLabel({Size=UDim2.new(0.6,0,0,20), Position=UDim2.new(0,10,0,6), Text=n, Font=Enum.Font.Gotham, TextSize=13, TextXAlignment=Enum.TextXAlignment.Left, ZIndex=15, Parent=bg})
+                local nl = MakeLabel({Size=UDim2.new(0.65,0,0,20), Position=UDim2.new(0,10,0,6), Text=n, Font=Enum.Font.Gotham, TextSize=13, TextXAlignment=Enum.TextXAlignment.Left, ZIndex=15, Parent=bg})
                 R(nl,"TextColor3","TextPrimary")
 
                 local vbox = Instance.new("TextBox")
-                vbox.Size = UDim2.new(0,72,0,22); vbox.Position = UDim2.new(1,-80,0,5)
-                vbox.BorderSizePixel = 0; vbox.Font = Enum.Font.GothamBold; vbox.TextSize = 12
-                vbox.TextXAlignment = Enum.TextXAlignment.Center; vbox.ClearTextOnFocus = true
+                vbox.Size = UDim2.new(0,70,0,22); vbox.Position = UDim2.new(1,-78,0,6)
+                vbox.BackgroundColor3 = theme.TertiaryBg; vbox.TextColor3 = theme.Accent
+                vbox.Font = Enum.Font.GothamBold; vbox.TextSize = 12
+                vbox.TextXAlignment = Enum.TextXAlignment.Center
+                vbox.ClearTextOnFocus = true
                 vbox.ZIndex = 15; vbox.Parent = bg
-                R(vbox,"BackgroundColor3","TertiaryBg"); R(vbox,"TextColor3","Accent"); MakeCorner(vbox,4)
+                MakeCorner(vbox,4)
 
-                local track = MakeFrame({Size=UDim2.new(1,-20,0,6), Position=UDim2.new(0,10,0,36), ZIndex=15, Parent=bg})
+                local track = MakeFrame({Size=UDim2.new(1,-20,0,6), Position=UDim2.new(0,10,0,34), ZIndex=15, Parent=bg})
                 R(track,"BackgroundColor3","TertiaryBg"); MakeCorner(track,3)
 
                 local fill = MakeFrame({Size=UDim2.new(0,0,1,0), ZIndex=16, Parent=track})
@@ -1334,118 +1323,57 @@ function NexusLib:CreateWindow(opts)
                 local thumb = MakeFrame({Size=UDim2.new(0,14,0,14), BackgroundColor3=Color3.fromRGB(255,255,255), ZIndex=17, Parent=track})
                 MakeCorner(thumb,7)
 
-                local polarityBtn = nil
-                if polarity then
-                    polarityBtn = Instance.new("TextButton")
-                    polarityBtn.Size = UDim2.new(1,-20,0,22); polarityBtn.Position = UDim2.new(0,10,0,50)
-                    polarityBtn.Font = Enum.Font.GothamBold; polarityBtn.TextSize = 11
-                    polarityBtn.BorderSizePixel = 0; polarityBtn.ZIndex = 15; polarityBtn.AutoButtonColor = false
-                    polarityBtn.Parent = bg
-                    MakeCorner(polarityBtn,5); AddHoverScale(polarityBtn); AddPressScale(polarityBtn)
-                end
-
                 local Sli = {}
                 local sliding = false
 
-                local function Fmt(v)
-                    if prec == 0 then
-                        local a = math.floor(math.abs(v) + 0.5)
-                        return tostring(v < 0 and -a or a) .. sfx
-                    end
-                    return string.format("%." .. prec .. "f", v) .. sfx
-                end
-
-                local function UpdatePill()
-                    if not polarityBtn then return end
-                    local isPos = (sign >= 0)
-                    local col = isPos and theme.Success or theme.Danger
-                    Tween(polarityBtn, {BackgroundColor3 = col}, 0.15)
-                    polarityBtn.TextColor3 = Color3.fromRGB(255,255,255)
-                    polarityBtn.Text = isPos and "＋ POSITIVE" or "－ NEGATIVE"
-                end
-
-                local function SV(v, fire)
-                    if polarity then
-                        if v ~= 0 then sign = (v < 0) and -1 or 1 end
-                        local m = math.abs(v)
-                        m = math.clamp(m, 0, smax)
-                        if prec == 0 then m = math.floor(m + 0.5) end
-                        mag = m
-                        val = mag * sign
-                    else
-                        v = math.clamp(v, smin, smax)
-                        if prec == 0 then v = math.floor(v + 0.5) end
-                        val = v
-                    end
-                    if flag then NexusLib.Flags[flag] = val end
-
-                    local p = (smax > 0) and math.clamp(mag / smax, 0, 1) or 0
+                local function updateVisuals()
+                    local p = (smax > smin) and math.clamp((val - smin) / (smax - smin), 0, 1) or 0
                     fill.Size = UDim2.new(p, 0, 1, 0)
-                    thumb.Position = UDim2.new(p, -7, 0.5, -7)   -- perfectly centered 14px thumb
-                    vbox.Text = Fmt(val)
-                    UpdatePill()
+                    thumb.Position = UDim2.new(p, -7, 0.5, -7)
+                    vbox.Text = prec == 0 and tostring(math.floor(val + 0.5)) .. sfx or string.format("%."..prec.."f", val) .. sfx
+                end
+
+                local function setValue(v, fire)
+                    val = math.clamp(v, smin, smax)
+                    if flag then NexusLib.Flags[flag] = val end
+                    updateVisuals()
                     if fire then cb(val) end
                 end
 
-                SV(def, false)
+                updateVisuals()
 
-                if polarityBtn then
-                    polarityBtn.MouseButton1Click:Connect(function()
-                        sign = -sign
-                        val = mag * sign
-                        if flag then NexusLib.Flags[flag] = val end
-                        vbox.Text = Fmt(val)
-                        UpdatePill()
-                        cb(val)
-                    end)
-                end
-
-                local function updateFromMouse()
-                    local mouseX = UserInputService:GetMouseLocation().X
-                    local trackX = track.AbsolutePosition.X
-                    local trackW = track.AbsoluteSize.X
-                    local p = math.clamp((mouseX - trackX) / trackW, 0, 1)
-                    local newVal = smin + (smax - smin) * p
-                    if polarity then newVal = smax * p * sign end
-                    SV(newVal, true)
-                end
-
-                -- Click anywhere on track or thumb
-                AddConn(track.InputBegan:Connect(function(i)
+                -- Click + drag
+                track.InputBegan:Connect(function(i)
                     if i.UserInputType == Enum.UserInputType.MouseButton1 then
                         sliding = true
-                        updateFromMouse()
-                        TweenSpring(thumb, {Size = UDim2.new(0,18,0,18)}, 0.12)
+                        local mouseX = UserInputService:GetMouseLocation().X
+                        local p = math.clamp((mouseX - track.AbsolutePosition.X) / math.max(track.AbsoluteSize.X, 1), 0, 1)
+                        setValue(smin + (smax - smin) * p, true)
+                        TweenSpring(thumb, {Size = UDim2.new(0,18,0,18)}, 0.1)
                     end
-                end))
+                end)
 
-                AddConn(thumb.InputBegan:Connect(function(i)
-                    if i.UserInputType == Enum.UserInputType.MouseButton1 then
-                        sliding = true
-                        TweenSpring(thumb, {Size = UDim2.new(0,18,0,18)}, 0.12)
-                    end
-                end))
-
-                -- Smooth drag even at high speed
-                AddConn(UserInputService.InputChanged:Connect(function(i)
+                UserInputService.InputChanged:Connect(function(i)
                     if sliding and i.UserInputType == Enum.UserInputType.MouseMovement then
-                        updateFromMouse()
+                        local mouseX = UserInputService:GetMouseLocation().X
+                        local p = math.clamp((mouseX - track.AbsolutePosition.X) / math.max(track.AbsoluteSize.X, 1), 0, 1)
+                        setValue(smin + (smax - smin) * p, true)
                     end
-                end))
+                end)
 
-                AddConn(UserInputService.InputEnded:Connect(function(i)
-                    if i.UserInputType == Enum.UserInputType.MouseButton1 and sliding then
+                UserInputService.InputEnded:Connect(function(i)
+                    if i.UserInputType == Enum.UserInputType.MouseButton1 then
                         sliding = false
                         TweenSine(thumb, {Size = UDim2.new(0,14,0,14)}, 0.15)
                     end
-                end))
-
-                vbox.FocusLost:Connect(function()
-                    local num = tonumber(vbox.Text:match("[%-+]?%d*%.?%d+"))
-                    if num then SV(num, true) else vbox.Text = Fmt(val) end
                 end)
 
-                function Sli:Set(v) SV(v, false) end
+                vbox.FocusLost:Connect(function()
+                    local num = tonumber(vbox.Text)
+                    if num then setValue(num, true) end
+                end)
+
+                function Sli:Set(v) setValue(v, false) end
                 function Sli:Get() return val end
                 function Sli:SetCallback(f) cb = f end
                 if flag then NexusLib.Options[flag] = Sli end
