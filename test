@@ -1,0 +1,821 @@
+--[[
+    Prison Life — Friend Group Script
+    v4 — Snapshot team detection on arena load, frozen until new arena
+--]]
+
+--// SERVICES
+local Camera           = workspace.CurrentCamera
+local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local LocalPlayer      = Players.LocalPlayer
+local Mouse            = LocalPlayer:GetMouse()
+
+--// CONFIG
+_G.AIMBOT_ENABLED     = false
+_G.AIM_AT             = "Head"
+_G.AIMBOT_TOGGLE_KEY  = Enum.KeyCode.Q
+_G.AIM_KEY            = { kind="mouse", val=Enum.UserInputType.MouseButton2 }
+_G.ESP_TOGGLE_KEY     = Enum.KeyCode.Semicolon
+_G.UI_TOGGLE_KEY      = Enum.KeyCode.RightControl
+_G.BIGHEAD_TOGGLE_KEY = Enum.KeyCode.H
+_G.BIGHEAD_ENABLED    = false
+_G.BIGHEAD_SIZE       = 2.0
+_G.ASSIST_ENABLED     = false
+_G.ASSIST_TOGGLE_KEY  = Enum.KeyCode.G
+-- How many pixels from crosshair to enemy screen pos counts as "close enough"
+_G.ASSIST_RADIUS      = 120  -- pixels
+_G.ASSIST_CIRCLE_VISIBLE = true  -- show the assist radius circle on screen
+
+--// STATE
+local ESP_ENABLED  = false
+local ESP_OBJECTS  = {}
+local UI_OPEN      = true
+local TAG_NAME     = "ESP_Tag"
+
+-- Team state — SNAPSHOT only, set once per arena, never updated mid-game
+local ALLIES   = {}   -- [Player] = true
+local ENEMIES  = {}   -- [Player] = true
+
+local currentArena = nil
+local arenaSnapshotPending = false
+
+-- How far from any spawn part counts as "at that spawn"
+local SPAWN_THRESHOLD = 50   -- studs, generous to handle load-in variance
+-- How far from arena center before a player is excluded from ESP/aimbot
+local ARENA_RADIUS    = 500  -- studs — generous for varied arena sizes/shapes
+
+--// ══════════════════════════════════════════════════════════════════
+--// HELPERS
+--// ══════════════════════════════════════════════════════════════════
+local function keyName(k)
+    if k == nil then return "None" end
+    if type(k) == "table" then
+        if k.kind == "key"   then return k.val.Name end
+        if k.kind == "mouse" then return k.val.Name end
+    end
+    return "None"
+end
+
+local function round1(n)
+    return math.floor(n * 10 + 0.5) / 10
+end
+
+-- Get all spawn {part, folder} entries from an arena
+local function GetSpawnParts(arena)
+    local result = {}
+    local spawns = arena:FindFirstChild("Spawns")
+    if not spawns then return result end
+    for _, folder in ipairs(spawns:GetChildren()) do
+        -- Each child of Spawns is a folder (named "1", "2", etc.)
+        local part = folder:FindFirstChild("Part")
+        if part and part:IsA("BasePart") then
+            table.insert(result, { part = part, folder = folder, folderName = folder.Name })
+        end
+    end
+    return result
+end
+
+-- Which spawn folder is a world position closest to?
+-- Returns the folder entry, or nil if beyond SPAWN_THRESHOLD
+local function GetNearestSpawnEntry(pos, spawnParts)
+    local best, bestDist = nil, math.huge
+    for _, sp in ipairs(spawnParts) do
+        local d = (pos - sp.part.Position).Magnitude
+        if d < bestDist then bestDist = d; best = sp end
+    end
+    if best and bestDist <= SPAWN_THRESHOLD then return best end
+    return nil
+end
+
+-- Get arena center — uses average of all spawn parts rather than GetPivot
+-- since GetPivot can be unreliable on complex models
+local function GetArenaCenter(arena, spawnParts)
+    if #spawnParts > 0 then
+        local sum = Vector3.new(0,0,0)
+        for _, sp in ipairs(spawnParts) do sum = sum + sp.part.Position end
+        return sum / #spawnParts
+    end
+    -- Fallback: try GetPivot
+    local ok, p = pcall(function() return arena:GetPivot().Position end)
+    return ok and p or Vector3.new(0,0,0)
+end
+
+local function IsNearArena(plr, arenaCenter)
+    if not plr.Character then return false end
+    local hrp = plr.Character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+    return (hrp.Position - arenaCenter).Magnitude <= ARENA_RADIUS
+end
+
+local TeamStatusLabel  -- forward declared, assigned in GUI section
+
+local function UpdateStatusLabel()
+    if not TeamStatusLabel then return end
+    if not currentArena then
+        TeamStatusLabel.Text = "Arena: scanning..."
+        return
+    end
+    local a, e = 0, 0
+    for _ in pairs(ALLIES)  do a = a + 1 end
+    for _ in pairs(ENEMIES) do e = e + 1 end
+    TeamStatusLabel.Text = currentArena.Name
+        .. "  Allies:" .. a .. "  Enemies:" .. e
+end
+
+local function RefreshAllESPColors()
+    for plr, data in pairs(ESP_OBJECTS) do
+        if not data then continue end
+        local col
+        if ALLIES[plr]  then col = Color3.fromRGB(50,220,80)
+        elseif ENEMIES[plr] then col = Color3.fromRGB(220,50,50)
+        else col = Color3.fromRGB(180,180,180) end
+        if data.Highlight then
+            data.Highlight.FillColor    = col
+            data.Highlight.OutlineColor = col
+        end
+        local lbl = data.Label and data.Label:FindFirstChildOfClass("TextLabel")
+        if lbl then lbl.TextColor3 = col end
+    end
+end
+
+local function ESPColorFor(plr)
+    if ALLIES[plr]  then return Color3.fromRGB(50,220,80)  end
+    if ENEMIES[plr] then return Color3.fromRGB(220,50,50)  end
+    return Color3.fromRGB(180,180,180)
+end
+
+--// ══════════════════════════════════════════════════════════════════
+--// GUI
+--// ══════════════════════════════════════════════════════════════════
+local ScreenGui = Instance.new("ScreenGui", game.CoreGui)
+ScreenGui.Name = "AimbotUI"; ScreenGui.ResetOnSpawn = false
+
+local Frame = Instance.new("Frame", ScreenGui)
+Frame.Size = UDim2.new(0,275,0,400)
+Frame.Position = UDim2.new(0.05,0,0.08,0)
+Frame.BackgroundColor3 = Color3.fromRGB(22,28,42)
+Frame.BackgroundTransparency = 0.05
+Frame.Active = true; Frame.Draggable = true
+Instance.new("UICorner", Frame).CornerRadius = UDim.new(0,12)
+local fs = Instance.new("UIStroke", Frame)
+fs.Color = Color3.fromRGB(45,55,70); fs.Thickness = 1.5
+
+if getgenv().SavedFramePos then Frame.Position = getgenv().SavedFramePos end
+Frame:GetPropertyChangedSignal("Position"):Connect(function()
+    getgenv().SavedFramePos = Frame.Position
+end)
+
+local TBar = Instance.new("Frame", Frame)
+TBar.Size = UDim2.new(1,0,0,32)
+TBar.BackgroundColor3 = Color3.fromRGB(190,190,190)
+Instance.new("UICorner", TBar).CornerRadius = UDim.new(0,12)
+
+local TitleLabel = Instance.new("TextLabel", Frame)
+TitleLabel.Text = "Prison Life"
+TitleLabel.Size = UDim2.new(0,180,0,24); TitleLabel.Position = UDim2.new(0,8,0,4)
+TitleLabel.BackgroundTransparency = 1; TitleLabel.TextColor3 = Color3.new(1,1,1)
+TitleLabel.Font = Enum.Font.SourceSansBold; TitleLabel.TextSize = 16
+TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+TeamStatusLabel = Instance.new("TextLabel", Frame)
+TeamStatusLabel.Size = UDim2.new(1,-16,0,14); TeamStatusLabel.Position = UDim2.new(0,8,0,32)
+TeamStatusLabel.BackgroundTransparency = 1
+TeamStatusLabel.TextColor3 = Color3.fromRGB(140,200,140)
+TeamStatusLabel.Font = Enum.Font.SourceSans; TeamStatusLabel.TextSize = 12
+TeamStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+TeamStatusLabel.Text = "Arena: scanning..."
+
+local MinBtn = Instance.new("TextButton", Frame)
+MinBtn.Size = UDim2.new(0,24,0,24); MinBtn.Position = UDim2.new(1,-58,0,4)
+MinBtn.Text = "–"; MinBtn.TextScaled = true
+MinBtn.BackgroundColor3 = Color3.fromRGB(60,70,90); MinBtn.TextColor3 = Color3.new(1,1,1)
+Instance.new("UICorner", MinBtn).CornerRadius = UDim.new(0,7)
+
+local ExitBtn = Instance.new("TextButton", Frame)
+ExitBtn.Size = UDim2.new(0,24,0,24); ExitBtn.Position = UDim2.new(1,-30,0,4)
+ExitBtn.Text = "X"; ExitBtn.TextScaled = true
+ExitBtn.BackgroundColor3 = Color3.fromRGB(160,45,45); ExitBtn.TextColor3 = Color3.new(1,1,1)
+Instance.new("UICorner", ExitBtn).CornerRadius = UDim.new(0,7)
+
+local function MakeRow(parent, labelText, yPos)
+    local lbl = Instance.new("TextLabel", parent)
+    lbl.Size = UDim2.new(0,158,0,24); lbl.Position = UDim2.new(0,10,0,yPos)
+    lbl.BackgroundTransparency = 1; lbl.Text = labelText
+    lbl.TextColor3 = Color3.fromRGB(205,205,205)
+    lbl.Font = Enum.Font.SourceSansBold; lbl.TextSize = 14
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    local btn = Instance.new("TextButton", parent)
+    btn.Size = UDim2.new(0,82,0,21); btn.Position = UDim2.new(1,-90,0,yPos+1)
+    btn.BackgroundColor3 = Color3.fromRGB(40,55,82)
+    btn.TextColor3 = Color3.fromRGB(200,200,200); btn.TextScaled = true; btn.Text = "..."
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0,6)
+    return lbl, btn
+end
+
+local BASE = 50
+local ESPLabel,     ESPKeyBtn     = MakeRow(Frame, "ESP: OFF",      BASE)
+local AimbotLabel,  AimbotKeyBtn  = MakeRow(Frame, "Aimbot: OFF",   BASE+30)
+local AimInLabel,   AimInBtn      = MakeRow(Frame, "Aim key:",       BASE+60)
+local BigHeadLabel, BigHeadKeyBtn = MakeRow(Frame, "Big head: OFF", BASE+90)
+local AssistLabel,  AssistKeyBtn  = MakeRow(Frame, "Assist: OFF",   BASE+120)
+local UIKeyLabel,   UIKeyBtn      = MakeRow(Frame, "UI key:",        BASE+150)
+
+ESPKeyBtn.Text     = keyName(_G.ESP_TOGGLE_KEY)
+AimbotKeyBtn.Text  = keyName(_G.AIMBOT_TOGGLE_KEY)
+AimInBtn.Text      = keyName(_G.AIM_KEY)
+BigHeadKeyBtn.Text = keyName(_G.BIGHEAD_TOGGLE_KEY)
+AssistKeyBtn.Text  = keyName(_G.ASSIST_TOGGLE_KEY)
+UIKeyBtn.Text      = keyName(_G.UI_TOGGLE_KEY)
+
+local SLY = BASE + 185
+local SliderLabel = Instance.new("TextLabel", Frame)
+SliderLabel.Size = UDim2.new(1,-16,0,16); SliderLabel.Position = UDim2.new(0,10,0,SLY)
+SliderLabel.BackgroundTransparency = 1
+SliderLabel.Text = "Head size: x" .. string.format("%.1f", _G.BIGHEAD_SIZE)
+SliderLabel.TextColor3 = Color3.fromRGB(170,170,170)
+SliderLabel.Font = Enum.Font.SourceSansBold; SliderLabel.TextSize = 13
+SliderLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+local SliderTrack = Instance.new("Frame", Frame)
+SliderTrack.Size = UDim2.new(1,-20,0,6); SliderTrack.Position = UDim2.new(0,10,0,SLY+22)
+SliderTrack.BackgroundColor3 = Color3.fromRGB(45,58,78)
+Instance.new("UICorner", SliderTrack).CornerRadius = UDim.new(1,0)
+
+local SliderFill = Instance.new("Frame", SliderTrack)
+SliderFill.BackgroundColor3 = Color3.fromRGB(90,140,210)
+Instance.new("UICorner", SliderFill).CornerRadius = UDim.new(1,0)
+
+local SliderKnob = Instance.new("TextButton", SliderTrack)
+SliderKnob.Size = UDim2.new(0,14,0,14); SliderKnob.Text = ""
+SliderKnob.BackgroundColor3 = Color3.fromRGB(140,180,235); SliderKnob.ZIndex = 3
+Instance.new("UICorner", SliderKnob).CornerRadius = UDim.new(1,0)
+
+local MIN_SIZE, MAX_SIZE = 1.0, 8.0
+
+local function UpdateSliderVisual(pct)
+    pct = math.clamp(pct, 0, 1)
+    SliderFill.Size = UDim2.new(pct, 0, 1, 0)
+    SliderKnob.Position = UDim2.new(pct, -7, 0.5, -7)
+    _G.BIGHEAD_SIZE = round1(MIN_SIZE + pct * (MAX_SIZE - MIN_SIZE))
+    SliderLabel.Text = "Head size: x" .. string.format("%.1f", _G.BIGHEAD_SIZE)
+end
+UpdateSliderVisual((_G.BIGHEAD_SIZE - MIN_SIZE) / (MAX_SIZE - MIN_SIZE))
+
+local sliderDragging = false
+SliderKnob.MouseButton1Down:Connect(function() sliderDragging = true end)
+UserInputService.InputEnded:Connect(function(i)
+    if i.UserInputType == Enum.UserInputType.MouseButton1 then sliderDragging = false end
+end)
+
+-- Assist radius slider
+local ARSY = SLY + 38   -- position below head size slider
+
+local AssistRadiusLabel = Instance.new("TextLabel", Frame)
+AssistRadiusLabel.Size = UDim2.new(0,158,0,16)
+AssistRadiusLabel.Position = UDim2.new(0,10,0,ARSY)
+AssistRadiusLabel.BackgroundTransparency = 1
+AssistRadiusLabel.Text = "Assist radius: " .. _G.ASSIST_RADIUS .. "px"
+AssistRadiusLabel.TextColor3 = Color3.fromRGB(170,170,170)
+AssistRadiusLabel.Font = Enum.Font.SourceSansBold; AssistRadiusLabel.TextSize = 13
+AssistRadiusLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+-- Circle visibility toggle button (right side of same row)
+local CircleVisBtn = Instance.new("TextButton", Frame)
+CircleVisBtn.Size = UDim2.new(0,82,0,16)
+CircleVisBtn.Position = UDim2.new(1,-90,0,ARSY)
+CircleVisBtn.BackgroundColor3 = Color3.fromRGB(40,100,60)
+CircleVisBtn.TextColor3 = Color3.fromRGB(200,200,200)
+CircleVisBtn.TextScaled = true
+CircleVisBtn.Text = "Circle: ON"
+Instance.new("UICorner", CircleVisBtn).CornerRadius = UDim.new(0,6)
+
+local AssistRadiusTrack = Instance.new("Frame", Frame)
+AssistRadiusTrack.Size = UDim2.new(1,-20,0,6)
+AssistRadiusTrack.Position = UDim2.new(0,10,0,ARSY+22)
+AssistRadiusTrack.BackgroundColor3 = Color3.fromRGB(45,58,78)
+Instance.new("UICorner", AssistRadiusTrack).CornerRadius = UDim.new(1,0)
+
+local AssistRadiusFill = Instance.new("Frame", AssistRadiusTrack)
+AssistRadiusFill.BackgroundColor3 = Color3.fromRGB(180,120,60)
+Instance.new("UICorner", AssistRadiusFill).CornerRadius = UDim.new(1,0)
+
+local AssistRadiusKnob = Instance.new("TextButton", AssistRadiusTrack)
+AssistRadiusKnob.Size = UDim2.new(0,14,0,14); AssistRadiusKnob.Text = ""
+AssistRadiusKnob.BackgroundColor3 = Color3.fromRGB(220,160,80); AssistRadiusKnob.ZIndex = 3
+Instance.new("UICorner", AssistRadiusKnob).CornerRadius = UDim.new(1,0)
+
+local MIN_RADIUS, MAX_RADIUS = 20, 400
+
+local function UpdateAssistRadiusVisual(pct)
+    pct = math.clamp(pct, 0, 1)
+    AssistRadiusFill.Size = UDim2.new(pct, 0, 1, 0)
+    AssistRadiusKnob.Position = UDim2.new(pct, -7, 0.5, -7)
+    _G.ASSIST_RADIUS = math.floor(MIN_RADIUS + pct * (MAX_RADIUS - MIN_RADIUS) + 0.5)
+    AssistRadiusLabel.Text = "Assist radius: " .. _G.ASSIST_RADIUS .. "px"
+end
+UpdateAssistRadiusVisual((_G.ASSIST_RADIUS - MIN_RADIUS) / (MAX_RADIUS - MIN_RADIUS))
+
+local assistRadiusDragging = false
+AssistRadiusKnob.MouseButton1Down:Connect(function() assistRadiusDragging = true end)
+UserInputService.InputEnded:Connect(function(i)
+    if i.UserInputType == Enum.UserInputType.MouseButton1 then assistRadiusDragging = false end
+end)
+
+-- The crosshair circle overlay — drawn in ScreenGui, always centered on mouse
+-- It's a square Frame with UICorner=1 (full circle), no background fill, just an outline
+local CircleFrame = Instance.new("Frame", ScreenGui)
+CircleFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+CircleFrame.BackgroundTransparency = 1
+CircleFrame.BorderSizePixel = 0
+CircleFrame.ZIndex = 10
+CircleFrame.Visible = _G.ASSIST_CIRCLE_VISIBLE
+
+local CircleStroke = Instance.new("UIStroke", CircleFrame)
+CircleStroke.Color = Color3.fromRGB(255, 200, 80)  -- amber/gold
+CircleStroke.Thickness = 1.5
+CircleStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+Instance.new("UICorner", CircleFrame).CornerRadius = UDim.new(1, 0)
+
+local function UpdateCircleSize()
+    local d = _G.ASSIST_RADIUS * 2
+    CircleFrame.Size = UDim2.new(0, d, 0, d)
+end
+UpdateCircleSize()
+
+CircleVisBtn.MouseButton1Click:Connect(function()
+    _G.ASSIST_CIRCLE_VISIBLE = not _G.ASSIST_CIRCLE_VISIBLE
+    CircleFrame.Visible = _G.ASSIST_CIRCLE_VISIBLE
+    CircleVisBtn.Text = "Circle: " .. (_G.ASSIST_CIRCLE_VISIBLE and "ON" or "OFF")
+    CircleVisBtn.BackgroundColor3 = _G.ASSIST_CIRCLE_VISIBLE
+        and Color3.fromRGB(40,100,60) or Color3.fromRGB(90,40,40)
+end)
+
+local contentRows = {
+    ESPLabel, ESPKeyBtn, AimbotLabel, AimbotKeyBtn,
+    AimInLabel, AimInBtn, BigHeadLabel, BigHeadKeyBtn,
+    AssistLabel, AssistKeyBtn, UIKeyLabel, UIKeyBtn,
+    SliderLabel, SliderTrack,
+    AssistRadiusLabel, AssistRadiusTrack, CircleVisBtn,
+    TeamStatusLabel
+}
+local minimized = false
+MinBtn.MouseButton1Click:Connect(function()
+    minimized = not minimized
+    for _, obj in ipairs(contentRows) do obj.Visible = not minimized end
+    TBar.Visible = not minimized
+    Frame.Size = minimized and UDim2.new(0,275,0,33) or UDim2.new(0,275,0,400)
+end)
+
+--// ══════════════════════════════════════════════════════════════════
+--// KEYBIND CAPTURE
+--// ══════════════════════════════════════════════════════════════════
+local waitingForKey = false
+local waitingConn   = nil
+
+local function WaitForInput(btn, onSet)
+    if waitingForKey then return end
+    waitingForKey = true
+    btn.Text = "Press..."
+    btn.BackgroundColor3 = Color3.fromRGB(100,65,20)
+
+    local function finish(result)
+        onSet(result)
+        btn.Text = keyName(result)
+        btn.BackgroundColor3 = Color3.fromRGB(40,55,82)
+        task.delay(0.05, function() waitingForKey = false end)
+        if waitingConn then waitingConn:Disconnect(); waitingConn = nil end
+    end
+
+    waitingConn = UserInputService.InputBegan:Connect(function(input, _)
+        if input.KeyCode == Enum.KeyCode.Escape then
+            finish(nil)
+        elseif input.UserInputType == Enum.UserInputType.Keyboard then
+            finish({ kind="key", val=input.KeyCode })
+        elseif input.UserInputType == Enum.UserInputType.MouseButton1 then
+            finish({ kind="mouse", val=Enum.UserInputType.MouseButton1 })
+        elseif input.UserInputType == Enum.UserInputType.MouseButton2 then
+            finish({ kind="mouse", val=Enum.UserInputType.MouseButton2 })
+        elseif input.UserInputType == Enum.UserInputType.MouseButton3 then
+            finish({ kind="mouse", val=Enum.UserInputType.MouseButton3 })
+        end
+    end)
+end
+
+ESPKeyBtn.MouseButton1Click:Connect(function()
+    WaitForInput(ESPKeyBtn, function(k)
+        _G.ESP_TOGGLE_KEY = (k and k.kind=="key") and k.val or nil
+    end)
+end)
+AimbotKeyBtn.MouseButton1Click:Connect(function()
+    WaitForInput(AimbotKeyBtn, function(k)
+        _G.AIMBOT_TOGGLE_KEY = (k and k.kind=="key") and k.val or nil
+    end)
+end)
+AimInBtn.MouseButton1Click:Connect(function()
+    WaitForInput(AimInBtn, function(k) _G.AIM_KEY = k end)
+end)
+BigHeadKeyBtn.MouseButton1Click:Connect(function()
+    WaitForInput(BigHeadKeyBtn, function(k)
+        _G.BIGHEAD_TOGGLE_KEY = (k and k.kind=="key") and k.val or nil
+    end)
+end)
+AssistKeyBtn.MouseButton1Click:Connect(function()
+    WaitForInput(AssistKeyBtn, function(k)
+        _G.ASSIST_TOGGLE_KEY = (k and k.kind=="key") and k.val or nil
+    end)
+end)
+UIKeyBtn.MouseButton1Click:Connect(function()
+    WaitForInput(UIKeyBtn, function(k)
+        _G.UI_TOGGLE_KEY = (k and k.kind=="key") and k.val or nil
+    end)
+end)
+
+--// ══════════════════════════════════════════════════════════════════
+--// HITBOX BOX  — visual light-blue box, head Part untouched
+--// ══════════════════════════════════════════════════════════════════
+local hitboxParts  = {}  -- [Player] = Part
+local origHeadSizes = {} -- [Player] = Vector3
+
+local function GetOrigHeadSize(plr)
+    if origHeadSizes[plr] then return origHeadSizes[plr] end
+    local head = plr.Character and plr.Character:FindFirstChild("Head")
+    if head then origHeadSizes[plr] = head.Size; return head.Size end
+    return Vector3.new(2,2,2)
+end
+
+local function CreateHitboxPart(plr)
+    if plr == LocalPlayer then return end
+    local char = plr.Character; if not char then return end
+    local head = char:FindFirstChild("Head"); if not head then return end
+    if hitboxParts[plr] then hitboxParts[plr]:Destroy() end
+
+    local orig = GetOrigHeadSize(plr)
+    local box = Instance.new("Part")
+    box.Name             = "HeadHitbox"
+    box.Size             = orig * _G.BIGHEAD_SIZE
+    box.Transparency     = 0.55
+    box.Color            = Color3.fromRGB(100,200,255)
+    box.Material         = Enum.Material.SmoothPlastic
+    box.CanCollide       = false
+    box.CastShadow       = false
+    box.Anchored         = false
+    box.Massless         = true
+    box.CFrame           = head.CFrame
+    box.Parent           = char
+
+    local weld = Instance.new("WeldConstraint")
+    weld.Part0 = head; weld.Part1 = box; weld.Parent = box
+
+    hitboxParts[plr] = box
+end
+
+local function RemoveHitboxPart(plr)
+    if hitboxParts[plr] then hitboxParts[plr]:Destroy(); hitboxParts[plr] = nil end
+end
+
+local function UpdateHitboxSize(plr)
+    local box = hitboxParts[plr]
+    if not box or not box.Parent then return end
+    box.Size = GetOrigHeadSize(plr) * _G.BIGHEAD_SIZE
+end
+
+local function ApplyAllHitboxes()
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer then
+            if not hitboxParts[plr] or not hitboxParts[plr].Parent then
+                CreateHitboxPart(plr)
+            else
+                UpdateHitboxSize(plr)
+            end
+        end
+    end
+end
+
+local function RemoveAllHitboxes()
+    for plr in pairs(hitboxParts) do RemoveHitboxPart(plr) end
+end
+
+local function ToggleBigHead()
+    _G.BIGHEAD_ENABLED = not _G.BIGHEAD_ENABLED
+    BigHeadLabel.Text = "Big head: " .. (_G.BIGHEAD_ENABLED and "ON" or "OFF")
+    if _G.BIGHEAD_ENABLED then ApplyAllHitboxes() else RemoveAllHitboxes() end
+end
+
+-- Rebuild hitbox when a player's character respawns
+local function SetupHitboxWatcher(plr)
+    if plr == LocalPlayer then return end
+    plr.CharacterAdded:Connect(function()
+        origHeadSizes[plr] = nil
+        RemoveHitboxPart(plr)
+        if _G.BIGHEAD_ENABLED then
+            task.wait(0.2)
+            CreateHitboxPart(plr)
+        end
+    end)
+end
+for _, plr in ipairs(Players:GetPlayers()) do SetupHitboxWatcher(plr) end
+Players.PlayerAdded:Connect(SetupHitboxWatcher)
+
+--// ══════════════════════════════════════════════════════════════════
+--// ARENA DETECTION + TEAM SNAPSHOT
+--// ══════════════════════════════════════════════════════════════════
+
+--[[
+    FindArenaByProximity: no name matching at all.
+    Scans ALL workspace descendants for Parts whose ancestry is:
+        workspace -> [Model] -> Spawns -> [Folder] -> Part
+    If local player is within SPAWN_THRESHOLD of any such Part, that
+    Model is the current arena. Fires correctly regardless of arena
+    name, load order, or dynamic swapping.
+--]]
+local function FindArenaByProximity()
+    local char = LocalPlayer.Character
+    if not char then return nil end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return nil end
+    local myPos = hrp.Position
+
+    for _, part in ipairs(workspace:GetDescendants()) do
+        if not part:IsA("BasePart")  then continue end
+        if part.Name ~= "Part"       then continue end
+        local spawnFolder  = part.Parent
+        if not spawnFolder then continue end
+        local spawnsFolder = spawnFolder.Parent
+        if not spawnsFolder or spawnsFolder.Name ~= "Spawns" then continue end
+        local arenaModel   = spawnsFolder.Parent
+        if not arenaModel  or not arenaModel:IsA("Model")    then continue end
+        if arenaModel.Parent ~= workspace                     then continue end
+        -- Valid spawn Part found — is the local player near it?
+        if (myPos - part.Position).Magnitude <= SPAWN_THRESHOLD then
+            return arenaModel
+        end
+    end
+    return nil
+end
+
+--[[
+    TakeTeamSnapshot — the ONLY place ALLIES/ENEMIES is written.
+    Called once, 5 seconds after a new arena is detected.
+    Logic:
+      1. Collect all spawn parts from the arena.
+      2. Find which spawn folder the local player is closest to
+         → that is "my spawn folder"
+      3. For every other player: find their nearest spawn folder.
+         Same folder as mine → ALLY, different → ENEMY.
+      4. If a player has no character loaded yet, mark ENEMY by default
+         (safe fallback — they'll be reassigned next arena cycle).
+--]]
+local function TakeTeamSnapshot(arena)
+    if not arena or not arena.Parent then return end
+
+    ALLIES  = {}
+    ENEMIES = {}
+
+    local spawnParts = GetSpawnParts(arena)
+
+    if #spawnParts == 0 then
+        TeamStatusLabel.Text = arena.Name .. " — no Spawns found!"
+        return
+    end
+
+    -- Find local player's spawn folder
+    local myChar = LocalPlayer.Character
+    local myHRP  = myChar and myChar:FindFirstChild("HumanoidRootPart")
+    local myEntry = myHRP and GetNearestSpawnEntry(myHRP.Position, spawnParts)
+
+    -- Debug: print spawn part positions and local player position to output
+    -- (remove these prints once working)
+    print("[PL] Arena:", arena.Name, "| Spawn parts found:", #spawnParts)
+    for i, sp in ipairs(spawnParts) do
+        print("  Spawn["..i.."] folder='"..sp.folderName.."' pos="..tostring(sp.part.Position))
+    end
+    if myHRP then
+        print("  LocalPlayer pos="..tostring(myHRP.Position))
+        print("  My nearest spawn folder:", myEntry and myEntry.folderName or "NONE (too far)")
+    end
+
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr == LocalPlayer then continue end
+
+        local char = plr.Character
+        local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+
+        if not hrp then
+            -- Character not loaded — default enemy
+            ENEMIES[plr] = true
+            print("  "..plr.Name..": no HRP → ENEMY (default)")
+        else
+            local entry = GetNearestSpawnEntry(hrp.Position, spawnParts)
+            print("  "..plr.Name.." pos="..tostring(hrp.Position)
+                .." nearest="..(entry and entry.folderName or "NONE"))
+            if myEntry and entry and entry.folderName == myEntry.folderName then
+                ALLIES[plr] = true
+                print("    → ALLY")
+            else
+                ENEMIES[plr] = true
+                print("    → ENEMY")
+            end
+        end
+    end
+
+    UpdateStatusLabel()
+    RefreshAllESPColors()
+    arenaSnapshotPending = false
+end
+
+-- Called from render loop when a new arena is detected
+local function OnNewArenaDetected(arena)
+    if arenaSnapshotPending then return end  -- already scheduled
+    arenaSnapshotPending = true
+    currentArena = arena
+    ALLIES  = {}
+    ENEMIES = {}
+    TeamStatusLabel.Text = "New arena: " .. arena.Name .. " — loading teams in 5s..."
+    print("[PL] New arena detected:", arena.Name, "— snapshot in 5s")
+
+    task.delay(5, function()
+        TakeTeamSnapshot(arena)
+    end)
+end
+
+--// ══════════════════════════════════════════════════════════════════
+--// ESP
+--// ══════════════════════════════════════════════════════════════════
+local function ClearESP(plr)
+    if ESP_OBJECTS[plr] then
+        pcall(function()
+            if ESP_OBJECTS[plr].Label     then ESP_OBJECTS[plr].Label:Destroy()     end
+            if ESP_OBJECTS[plr].Highlight then ESP_OBJECTS[plr].Highlight:Destroy() end
+        end)
+        ESP_OBJECTS[plr] = nil
+    end
+    if plr:FindFirstChild(TAG_NAME) then plr[TAG_NAME]:Destroy() end
+end
+
+local function CreateESP(plr)
+    if plr == LocalPlayer then return end
+    if not plr.Character then return end
+    local head = plr.Character:FindFirstChild("Head")
+    if not head then return end
+    local humanoid = plr.Character:FindFirstChildOfClass("Humanoid")
+    if not humanoid or humanoid.Health <= 0 then return end
+    if plr:FindFirstChild(TAG_NAME) then return end
+
+    local tag = Instance.new("BoolValue"); tag.Name = TAG_NAME; tag.Parent = plr
+
+    local bb = Instance.new("BillboardGui")
+    bb.Adornee = head; bb.AlwaysOnTop = true
+    bb.Size = UDim2.new(0,170,0,22); bb.StudsOffset = Vector3.new(0,3.5,0)
+
+    local lbl = Instance.new("TextLabel", bb)
+    lbl.Size = UDim2.new(1,0,1,0); lbl.BackgroundTransparency = 1
+    local col = ESPColorFor(plr)
+    lbl.TextColor3 = col; lbl.TextStrokeTransparency = 0.1
+    lbl.Font = Enum.Font.SourceSansBold; lbl.TextSize = 13
+    lbl.Text = plr.Name .. " | HP:" .. math.floor(humanoid.Health)
+    bb.Parent = head
+
+    local hl = Instance.new("Highlight")
+    hl.Parent = plr.Character
+    hl.FillColor = col; hl.OutlineColor = col
+    hl.FillTransparency = 0.65; hl.OutlineTransparency = 0.1
+
+    ESP_OBJECTS[plr] = { Label=bb, Highlight=hl, Humanoid=humanoid }
+
+    humanoid:GetPropertyChangedSignal("Health"):Connect(function()
+        if humanoid.Health <= 0 then ClearESP(plr) end
+    end)
+end
+
+local function UpdateESP()
+    for plr, data in pairs(ESP_OBJECTS) do
+        if not plr.Character or not data.Humanoid then ClearESP(plr); continue end
+        if data.Humanoid.Health <= 0 then ClearESP(plr); continue end
+        local lbl = data.Label and data.Label:FindFirstChildOfClass("TextLabel")
+        if lbl then
+            local hstr = _G.BIGHEAD_ENABLED
+                and (" | Box:x"..string.format("%.1f",_G.BIGHEAD_SIZE)) or ""
+            lbl.Text = plr.Name .. " | HP:" .. math.floor(data.Humanoid.Health) .. hstr
+            local col = ESPColorFor(plr)
+            lbl.TextColor3 = col
+            if data.Highlight then
+                data.Highlight.FillColor    = col
+                data.Highlight.OutlineColor = col
+            end
+        end
+    end
+end
+
+local function ToggleESP()
+    ESP_ENABLED = not ESP_ENABLED
+    ESPLabel.Text = "ESP: " .. (ESP_ENABLED and "ON" or "OFF")
+    if ESP_ENABLED then
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= LocalPlayer then CreateESP(plr) end
+        end
+    else
+        for plr in pairs(ESP_OBJECTS) do ClearESP(plr) end
+    end
+end
+
+-- Re-create ESP on respawn
+Players.PlayerAdded:Connect(function(plr)
+    if plr == LocalPlayer then return end
+    plr.CharacterAdded:Connect(function()
+        task.wait(0.15)
+        ClearESP(plr)
+        if ESP_ENABLED then CreateESP(plr) end
+    end)
+end)
+for _, plr in ipairs(Players:GetPlayers()) do
+    if plr ~= LocalPlayer then
+        plr.CharacterAdded:Connect(function()
+            task.wait(0.15)
+            ClearESP(plr)
+            if ESP_ENABLED then CreateESP(plr) end
+        end)
+    end
+end
+Players.PlayerRemoving:Connect(function(plr)
+    ClearESP(plr)
+    RemoveHitboxPart(plr)
+    ALLIES[plr]   = nil
+    ENEMIES[plr]  = nil
+    origHeadSizes[plr] = nil
+end)
+
+--// ══════════════════════════════════════════════════════════════════
+--// AIMBOT
+--// ══════════════════════════════════════════════════════════════════
+local cachedArenaCenter = nil
+
+local function GetAimPosition(plr)
+    if _G.BIGHEAD_ENABLED and hitboxParts[plr] and hitboxParts[plr].Parent then
+        return hitboxParts[plr].Position
+    end
+    local part = plr.Character and plr.Character:FindFirstChild(_G.AIM_AT)
+    return part and part.Position
+end
+
+local function IsValidTarget(plr)
+    if plr == LocalPlayer     then return false end
+    if ALLIES[plr]            then return false end
+    if not ENEMIES[plr]       then return false end
+    if not plr.Character      then return false end
+    -- In-arena check using cached center
+    if cachedArenaCenter then
+        local hrp = plr.Character:FindFirstChild("HumanoidRootPart")
+        if not hrp then return false end
+        if (hrp.Position - cachedArenaCenter).Magnitude > ARENA_RADIUS then return false end
+    end
+    return true
+end
+
+local function GetClosestEnemy()
+    local best, bestDist = nil, math.huge
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if not IsValidTarget(plr) then continue end
+        local pos = GetAimPosition(plr)
+        if not pos then continue end
+        local sp, visible = Camera:WorldToScreenPoint(pos)
+        if not visible then continue end
+        local d = (Vector2.new(Mouse.X,Mouse.Y) - Vector2.new(sp.X,sp.Y)).Magnitude
+        if d < bestDist then bestDist = d; best = plr end
+    end
+    return best
+end
+
+local function AimKeyHeld()
+    local k = _G.AIM_KEY; if not k then return false end
+    if k.kind=="key"   then return UserInputService:IsKeyDown(k.val) end
+    if k.kind=="mouse" then return UserInputService:IsMouseButtonPressed(k.val) end
+    return false
+end
+
+local function InputMatchesAimKey(input)
+    local k = _G.AIM_KEY; if not k then return false end
+    if k.kind=="key"   and input.UserInputType==Enum.UserInputType.Keyboard
+                       and input.KeyCode==k.val then return true end
+    if k.kind=="mouse" and input.UserInputType==k.val then return true end
+    return false
+end
+
+--// ══════════════════════════════════════════════════════════════════
+--// SHOT ASSIST (aim correction via remote hijack)
+--// ══════════════════════════════════════════════════════════════════
+
+--[[
+    How it works:
+      When the player fires (Mouse.Button1Down), if ASSIST_ENABLED and there
+      is a valid enemy whose screen position is within ASSIST_RADIUS pixels
+      of the crosshair, we fire the UseItem remote ourselves with corrected
+      parameters pointing at that enemy's head — immediately after the real
+      shot fires so it doesn't feel delayed.
+
+    Arg structure (mapped from observed data):
+      arg1 = item identifier string (passthrough, unchanged)
+      arg2 = "" (passthrough, unchanged)
+      arg3 = {
+          [""] = {
+              [""] = { 
