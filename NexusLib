@@ -1,6 +1,49 @@
 -- ============================================================
---  NexusLib v3.0  |  Roblox UI Library
+--  NexusLib v3.1  |  Roblox UI Library
 --
+--  Drop-in replacement for v3.0 / v2.5: every older call still works.
+--  Everything new is opt-in (window / element options).
+--
+--  NEW IN 3.1
+--   * Search (CreateWindow{Search = true}):
+--       - a filter bar at the top of every tab (Tab option NoSearch = true
+--         to skip one). Hides elements / sections that don't contain all
+--         typed words; a matching section title keeps the whole section.
+--       - a global search box at the top of the sidebar: results as
+--         "Tab > Section > Feature"; clicking one opens the tab, filters it
+--         to that feature and scrolls to it.
+--       - sections / elements created later are searchable too;
+--         Section option NoSearch = true leaves a section out.
+--   * Config (automatic): every Toggle / Slider / Keybind / Dropdown /
+--     ColorPicker is registered as "Tab/Section/Name" (Textbox with
+--     Save = true). Opt out with NoSave = true on the element or section.
+--       Win:GetConfig() -> table      Win:LoadConfig(t)  (fires callbacks
+--       only for values that change, in creation order)
+--       Win:ExportConfig(t?, meta?) -> JSON text (+ clipboard)
+--       Win:ImportConfig(text) -> table, meta
+--       Win:SaveConfig(name) / LoadConfigFile(name) / ListConfigs() /
+--       DeleteConfig(name)   (files in opts.ConfigFolder)
+--   * Inline dropdowns (CreateWindow{InlineDropdowns = true} or
+--     Dropdown{Inline = true}): the list opens inside the section, multi
+--     select stays open, the tab scrolls to show it and back.
+--   * ComboBox element: type a name or pick one from a list (Items may be a
+--     function), Highlight(item), OnOpen, EmptyText, :SetStatus().
+--   * Slider AllowOverflow = true: typing a value above Max stretches the
+--     slider instead of clamping (Max is only the drag range).
+--   * Toggle Keybind = "F" (or true for unbound): a key button on the toggle
+--     row; the key flips the toggle. KeybindNotify / window option
+--     KeybindNotifications show an Enabled / Disabled notification.
+--     Saved in the config as "Name [Key]".
+--   * Toggle Module = true / "Label": Win:GetActiveModules() lists the ones
+--     that are on; NexusLib:CreateModList{} draws them as a draggable
+--     overlay (or any list from a Provider function).
+--   * Escape and the Roblox menu close every open list / popup
+--     (NexusLib:CloseAll, NexusLib:AddPopupCloser(fn) for your own).
+--   * The tab sidebar scrolls when there are more tabs than fit.
+--   * Section: :SetOrder(n) / opts.Order (position on the page).
+--   * Win:GetTab(name), Tab:GetSections(), Element._path (config key).
+--
+--  ---- 3.0 notes ----
 --  Drop-in replacement for v2.5: every v2.5 call still works.
 --
 --  FIXES
@@ -52,7 +95,7 @@ local NexusLib       = {}
 NexusLib.Flags       = {}
 NexusLib.Options     = {}
 NexusLib.Connections = {}
-NexusLib.Version     = "3.0"
+NexusLib.Version     = "3.1"
 NexusLib._listening  = false
 NexusLib._unload     = {}
 NexusLib._destroyed  = false
@@ -501,6 +544,33 @@ local function UnregisterPopup(p)
     if activePopup == p then activePopup = nil end
 end
 
+-- ── Close-everything (Escape / Roblox menu) ───────────────
+-- Inline lists (dropdowns / combo boxes) are not floating popups (scrolling
+-- the page must not close them), so they register here instead.
+local inlineOpen = {}
+local customClosers = {}
+function NexusLib:AddPopupCloser(fn) if type(fn) == "function" then table.insert(customClosers, fn) end end
+function NexusLib:CloseAll()
+    NexusLib:ClosePopups()
+    for o in pairs(inlineOpen) do pcall(o.close) end
+    for _, fn in ipairs(customClosers) do pcall(fn) end
+end
+AddConn(UserInputService.InputBegan:Connect(function(i)
+    if i.KeyCode == Enum.KeyCode.Escape and not NexusLib._listening then NexusLib:CloseAll() end
+end))
+pcall(function()
+    AddConn(game:GetService("GuiService").MenuOpened:Connect(function() NexusLib:CloseAll() end))
+end)
+
+-- ── Keybind notifications (one at a time) ─────────────────
+NexusLib.KeybindNotifications = false
+local lastKbNotif = nil
+local function notifyToggle(name, on)
+    if lastKbNotif and lastKbNotif.Dismiss then pcall(lastKbNotif.Dismiss) end
+    lastKbNotif = NexusLib:Notify({Title = name, Text = on and "Enabled" or "Disabled",
+        Type = on and "Success" or "Danger", Duration = 1.6})
+end
+
 -- ── Notify ────────────────────────────────────────────────
 local notifStack = {}
 local NOTIF_W, NOTIF_H, NOTIF_GAP, NOTIF_MARGIN = 290, 64, 8, 16
@@ -720,6 +790,7 @@ AttachElements = function(obj, container, ctx)
             cleaned = true
             for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
             if E._onDestroy then pcall(E._onDestroy) end
+            if E._unreg then pcall(E._unreg) end
         end
         function E:SetVisible(v) row.Visible = v and true or false end
         function E:Destroy()
@@ -735,6 +806,353 @@ AttachElements = function(obj, container, ctx)
     local function hoverBg(bg)
         bg.MouseEnter:Connect(function() Tween(bg, {BackgroundColor3=th().ElementHover}, 0.1) end)
         bg.MouseLeave:Connect(function() Tween(bg, {BackgroundColor3=th().ElementBg}, 0.1) end)
+    end
+    -- search text + config registration (3.1). ctx.win / ctx.path come from the
+    -- owning section; ctx.noSave from Section{NoSave = true}.
+    local REG_KINDS = {Toggle = true, Slider = true, Keybind = true, Dropdown = true, ColorPicker = true, Textbox = true}
+    local function meta(E, kind, name, text, o)
+        o = type(o) == "table" and o or {}
+        E._kind = kind; E._sname = name
+        E._stext = string.lower(tostring(text or name or ""))
+        if o.Module then E._module = (o.Module == true) and tostring(name) or tostring(o.Module) end
+        local win = ctx.win
+        if win and win._register and name and REG_KINDS[kind] and not ctx.noSave and not o.NoSave
+            and (kind ~= "Textbox" or o.Save == true) and E._cfgGet then
+            win._register((ctx.path or "?") .. "/" .. tostring(name), E)
+        end
+    end
+    -- ── INLINE LIST (shared by inline dropdowns + combo boxes) ──
+    -- A search/list panel that opens inside the row (pushing rows below down).
+    -- If it would end below the visible part of the page, the page scrolls to
+    -- show it and scrolls back on close (unless the user scrolled meanwhile).
+    local function pageOf(x) return x:FindFirstAncestorWhichIsA("ScrollingFrame") end
+    local function scrollIntoView(card, state)
+        local page = pageOf(card)
+        if not page then return end
+        state.page, state.prevY = page, page.CanvasPosition.Y
+        task.spawn(function()
+            RunService.Heartbeat:Wait(); RunService.Heartbeat:Wait()   -- let the layout grow first
+            if not state.open or not page.Parent then return end
+            local bottom = card.AbsolutePosition.Y + card.AbsoluteSize.Y
+            local viewBottom = page.AbsolutePosition.Y + page.AbsoluteWindowSize.Y
+            local over = bottom - viewBottom + 8
+            if over > 0 then
+                state.targetY = page.CanvasPosition.Y + over
+                Tween(page, {CanvasPosition = Vector2.new(page.CanvasPosition.X, state.targetY)}, 0.3)
+            end
+        end)
+    end
+    local function scrollBack(state)
+        if state.targetY and state.page and state.page.Parent
+            and math.abs(state.page.CanvasPosition.Y - state.targetY) < 6 then
+            Tween(state.page, {CanvasPosition = Vector2.new(state.page.CanvasPosition.X, state.prevY)}, 0.3)
+        end
+        state.targetY, state.page = nil, nil
+    end
+    local function makeListPanel(parent, order, withSearch)
+        local t = th()
+        local panel = MakeFrame({BackgroundTransparency=1, Visible=false, Size=UDim2.new(1,0,0,0),
+            AutomaticSize=Enum.AutomaticSize.Y, LayoutOrder=order, ZIndex=Z+1, Parent=parent})
+        local pp = Instance.new("UIPadding")
+        pp.PaddingLeft = UDim.new(0,8); pp.PaddingRight = UDim.new(0,8); pp.PaddingBottom = UDim.new(0,8); pp.Parent = panel
+        local pl = Instance.new("UIListLayout"); pl.SortOrder = Enum.SortOrder.LayoutOrder; pl.Padding = UDim.new(0,4); pl.Parent = panel
+        local search
+        if withSearch then
+            search = Instance.new("TextBox")
+            search.Size = UDim2.new(1,0,0,24); search.LayoutOrder = 1; search.BorderSizePixel = 0
+            search.Text = ""; search.PlaceholderText = "Search..."; search.Font = Enum.Font.Gotham; search.TextSize = 12
+            search.ClearTextOnFocus = false; search.TextXAlignment = Enum.TextXAlignment.Left; search.ZIndex = Z+2
+            search.Parent = panel
+            R(search, "BackgroundColor3", "TertiaryBg"); R(search, "TextColor3", "TextPrimary"); R(search, "PlaceholderColor3", "TextDim")
+            MakeCorner(search, 4)
+            local sp = Instance.new("UIPadding"); sp.PaddingLeft = UDim.new(0,8); sp.Parent = search
+        end
+        local listFrame = MakeFrame({LayoutOrder=2, Size=UDim2.new(1,0,0,0), ZIndex=Z+2, Parent=panel})
+        R(listFrame, "BackgroundColor3", "TertiaryBg"); MakeCorner(listFrame, 4)
+        local ls = MakeStroke(listFrame, t.Accent, 1); ls.Transparency = 0.5
+        RF(function() ls.Color = th().Accent end)
+        local scroll = Instance.new("ScrollingFrame")
+        scroll.Size = UDim2.new(1,-8,1,-8); scroll.Position = UDim2.new(0,4,0,4)
+        scroll.BackgroundTransparency = 1; scroll.BorderSizePixel = 0; scroll.ScrollBarThickness = 4
+        scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y; scroll.CanvasSize = UDim2.new(); scroll.ZIndex = Z+3
+        scroll.Parent = listFrame
+        R(scroll, "ScrollBarImageColor3", "ScrollBar")
+        local sl = Instance.new("UIListLayout"); sl.SortOrder = Enum.SortOrder.LayoutOrder; sl.Padding = UDim.new(0,2); sl.Parent = scroll
+        return panel, search, listFrame, scroll
+    end
+    local ROW_H, MAX_ROWS = 24, 7
+    -- fills `scroll` with item rows. rowFn(item) -> {text=, on=, click=fn}
+    local function fillList(scroll, listFrame, items, rowFn, emptyText)
+        for _, c in ipairs(scroll:GetChildren()) do if c:IsA("GuiObject") then c:Destroy() end end
+        local t = th()
+        if #items == 0 then
+            MakeLabel({Size=UDim2.new(1,-6,0,ROW_H), TextSize=12, TextXAlignment=Enum.TextXAlignment.Left,
+                Text="  " .. (emptyText or "Nothing matches"), TextColor3=t.TextDim, ZIndex=Z+4, Parent=scroll})
+        end
+        for i, item in ipairs(items) do
+            local info = rowFn(item)
+            local b = MakeButton({LayoutOrder=i, Size=UDim2.new(1,-6,0,ROW_H), ZIndex=Z+4, Parent=scroll})
+            MakeCorner(b, 4)
+            local l = MakeLabel({Size=UDim2.new(1,-30,1,0), Position=UDim2.new(0,8,0,0), TextSize=12,
+                TextXAlignment=Enum.TextXAlignment.Left, TextTruncate=Enum.TextTruncate.AtEnd,
+                Text=info.text, ZIndex=Z+5, Parent=b})
+            local mark = Icons.Check(b, Color3.new(1,1,1), Z+5)
+            mark.AnchorPoint = Vector2.new(0.5,0.5); mark.Position = UDim2.new(1,-12,0.5,0)
+            local function paintRow()
+                local on = info.on and info.on() or false
+                local th2 = th()
+                b.BackgroundColor3 = on and th2.Accent or th2.ElementBg
+                l.TextColor3 = th2.TextPrimary
+                mark.Visible = on
+            end
+            paintRow()
+            b.MouseEnter:Connect(function() if not (info.on and info.on()) then b.BackgroundColor3 = th().ElementHover end end)
+            b.MouseLeave:Connect(paintRow)
+            b.MouseButton1Click:Connect(function() info.click(); paintRow() end)
+        end
+        listFrame.Size = UDim2.new(1,0,0, math.min(math.max(#items,1), MAX_ROWS) * (ROW_H + 2) + 8)
+    end
+
+    -- ── INLINE DROPDOWN (Dropdown{Inline = true} / window InlineDropdowns) ──
+    local function addInlineDropdown(o)
+        local n = o.Name or "Dropdown"; local itemsSrc = o.Items or {}
+        local multi = o.Multi == true
+        local flag = o.Flag; local cb = o.Callback or function() end
+        local placeholder = o.Placeholder or (multi and "None" or "Select...")
+        local selected
+        if multi then
+            selected = {}
+            if type(o.Default) == "table" then for _, v in ipairs(o.Default) do table.insert(selected, v) end end
+        else selected = o.Default end
+        local function copySel() if not multi then return selected end; return table.clone(selected) end
+        if flag then NexusLib.Flags[flag] = copySel() end
+        local function getItems()
+            local it = itemsSrc
+            if type(it) == "function" then local ok, r = pcall(it); it = ok and r or {} end
+            return type(it) == "table" and it or {}
+        end
+        local function isSel(v) if multi then return table.find(selected, v) ~= nil end; return selected == v end
+        local function summary()
+            if multi then
+                if #selected == 0 then return placeholder end
+                if #selected <= 2 then local tt = {}; for i, v in ipairs(selected) do tt[i] = tostring(v) end; return table.concat(tt, ", ") end
+                return #selected .. " selected"
+            end
+            return selected ~= nil and tostring(selected) or placeholder
+        end
+        local row = newRow(36)
+        row.AutomaticSize = Enum.AutomaticSize.Y; row.Size = UDim2.new(1,0,0,0)
+        local rp = Instance.new("UIPadding"); rp.PaddingBottom = UDim.new(0,4); rp.Parent = row
+        local card = MakeFrame({Position=UDim2.new(0,inset,0,2), Size=UDim2.new(1,-2*inset,0,0),
+            AutomaticSize=Enum.AutomaticSize.Y, ZIndex=Z, Parent=row})
+        R(card, "BackgroundColor3", "ElementBg"); MakeCorner(card, 6)
+        local lay = Instance.new("UIListLayout"); lay.SortOrder = Enum.SortOrder.LayoutOrder; lay.Parent = card
+        local header = MakeButton({BackgroundTransparency=1, Size=UDim2.new(1,0,0,32), LayoutOrder=1, ZIndex=Z+1, Parent=card})
+        local nl = MakeLabel({Size=UDim2.new(0.42,-10,1,0), Position=UDim2.new(0,10,0,0), Text=n, TextSize=13,
+            TextXAlignment=Enum.TextXAlignment.Left, TextTruncate=Enum.TextTruncate.AtEnd, ZIndex=Z+2, Parent=header})
+        R(nl, "TextColor3", "TextPrimary")
+        local box = MakeFrame({Size=UDim2.new(0.58,-8,0,24), Position=UDim2.new(0.42,0,0.5,-12), ZIndex=Z+2, Parent=header})
+        R(box, "BackgroundColor3", "TertiaryBg"); MakeCorner(box, 5)
+        local bStroke = MakeStroke(box, th().Border, 1)
+        local disp = MakeLabel({Size=UDim2.new(1,-30,1,0), Position=UDim2.new(0,8,0,0), TextSize=12,
+            TextXAlignment=Enum.TextXAlignment.Left, TextTruncate=Enum.TextTruncate.AtEnd, ZIndex=Z+3, Parent=box})
+        local chev = Icons.Chevron(box, th().TextDim, Z+3)
+        chev.Position = UDim2.new(1,-13,0.5,0)
+        local function paint()
+            local empty = (multi and #selected == 0) or (not multi and selected == nil)
+            disp.Text = summary()
+            disp.TextColor3 = empty and th().TextSecondary or th().Accent
+            PaintIcon(chev, th().TextDim)
+        end
+        paint(); RF(paint)
+        local panel, search, listFrame, scroll = makeListPanel(card, 2, o.Search ~= false)
+        local D = {}
+        local state = {open = false}
+        local popup = {}
+        local function rebuild()
+            local q = search and search.Text:lower() or ""
+            local shown = {}
+            for _, v in ipairs(getItems()) do
+                if q == "" or tostring(v):lower():find(q, 1, true) then table.insert(shown, v) end
+            end
+            fillList(scroll, listFrame, shown, function(v)
+                return {text = tostring(v), on = function() return isSel(v) end, click = function()
+                    if multi then
+                        local k = table.find(selected, v)
+                        if k then table.remove(selected, k) else table.insert(selected, v) end
+                        if flag then NexusLib.Flags[flag] = copySel() end
+                        paint(); pcall(cb, copySel())
+                    else
+                        selected = v
+                        if flag then NexusLib.Flags[flag] = v end
+                        paint(); pcall(cb, v); D:Close()
+                    end
+                end}
+            end)
+        end
+        if search then search:GetPropertyChangedSignal("Text"):Connect(function() if state.open then rebuild() end end) end
+        local conns = {}
+        function D:Open()
+            if state.open then return end
+            state.open = true; inlineOpen[popup] = true
+            panel.Visible = true; Tween(chev, {Rotation = 180}, 0.2)
+            bStroke.Color = th().Accent
+            if search then search.Text = "" end
+            rebuild()
+            scrollIntoView(card, state)
+        end
+        function D:Close()
+            if not state.open then return end
+            state.open = false; inlineOpen[popup] = nil
+            panel.Visible = false; Tween(chev, {Rotation = 0}, 0.2)
+            bStroke.Color = th().Border
+            if search then pcall(function() search:ReleaseFocus() end) end
+            scrollBack(state)
+        end
+        popup.close = function() D:Close() end
+        header.MouseButton1Click:Connect(function() if state.open then D:Close() else D:Open() end end)
+        EC(conns, UserInputService.InputBegan:Connect(function(inp)
+            if not state.open or not IsPress(inp) then return end
+            local p = PointerPos(inp)
+            local a, sz = card.AbsolutePosition, card.AbsoluteSize
+            if p.X < a.X or p.X > a.X + sz.X or p.Y < a.Y or p.Y > a.Y + sz.Y then D:Close() end
+        end))
+        function D:IsOpen() return state.open end
+        function D:Get() return copySel() end
+        function D:Set(v)
+            if multi then
+                selected = {}
+                if type(v) == "table" then for _, x in ipairs(v) do table.insert(selected, x) end end
+            else selected = v end
+            if flag then NexusLib.Flags[flag] = copySel() end
+            paint(); if state.open then rebuild() end
+        end
+        function D:Refresh()
+            if multi then   -- drop selections that no longer exist
+                local items = getItems()
+                if #items > 0 then
+                    local have = {}; for _, x in ipairs(items) do have[x] = true end
+                    local keep = {}; for _, x in ipairs(selected) do if have[x] then table.insert(keep, x) end end
+                    selected = keep
+                    if flag then NexusLib.Flags[flag] = copySel() end
+                end
+            end
+            paint(); if state.open then rebuild() end
+        end
+        function D:SetItems(i) itemsSrc = i; D:Refresh() end
+        function D:SetCallback(f) cb = f end
+        D._cfgGet = function() return copySel() end
+        D._cfgSet = function(v) D:Set(v); pcall(cb, copySel()) end
+        D._onDestroy = function() D:Close() end
+        if flag then NexusLib.Options[flag] = D end
+        meta(D, "Dropdown", n, n .. " " .. (o.Description or ""), o)
+        return finish(row, D, conns)
+    end
+
+    -- ── COMBO BOX (type a name or pick one from the list) ──
+    -- o: Name/Title, Placeholder, Items (table or fn), Default, Callback(text, picked),
+    --    Highlight(item) -> bool (marked), OnOpen() (before the list opens),
+    --    EmptyText(typed) -> string, Status (initial status line text).
+    function obj:AddComboBox(o)
+        o = o or {}
+        local itemsSrc = o.Items or {}
+        local cb = o.Callback or function() end
+        local function getItems()
+            local it = itemsSrc
+            if type(it) == "function" then local ok, r = pcall(it); it = ok and r or {} end
+            return type(it) == "table" and it or {}
+        end
+        local row = newRow(36)
+        row.AutomaticSize = Enum.AutomaticSize.Y; row.Size = UDim2.new(1,0,0,0)
+        local rp = Instance.new("UIPadding"); rp.PaddingBottom = UDim.new(0,4); rp.Parent = row
+        local card = MakeFrame({Position=UDim2.new(0,inset,0,2), Size=UDim2.new(1,-2*inset,0,0),
+            AutomaticSize=Enum.AutomaticSize.Y, ZIndex=Z, Parent=row})
+        R(card, "BackgroundColor3", "ElementBg"); MakeCorner(card, 6)
+        local pad = Instance.new("UIPadding")
+        pad.PaddingLeft = UDim.new(0,10); pad.PaddingRight = UDim.new(0,10); pad.PaddingTop = UDim.new(0,8); pad.PaddingBottom = UDim.new(0,8)
+        pad.Parent = card
+        local lay = Instance.new("UIListLayout"); lay.SortOrder = Enum.SortOrder.LayoutOrder; lay.Padding = UDim.new(0,6); lay.Parent = card
+        local title = o.Name or o.Title
+        if title then
+            local tl = MakeLabel({Size=UDim2.new(1,0,0,18), Text=title, Font=Enum.Font.GothamBold, TextSize=13,
+                TextXAlignment=Enum.TextXAlignment.Left, LayoutOrder=1, ZIndex=Z+1, Parent=card})
+            R(tl, "TextColor3", "TextPrimary")
+        end
+        local box = Instance.new("TextBox")
+        box.Size = UDim2.new(1,0,0,28); box.LayoutOrder = 2; box.BorderSizePixel = 0; box.Text = o.Default or ""
+        box.PlaceholderText = o.Placeholder or "Type a name, or click to pick one"
+        box.Font = Enum.Font.Gotham; box.TextSize = 12; box.ClearTextOnFocus = false
+        box.TextXAlignment = Enum.TextXAlignment.Left; box.ZIndex = Z+1; box.Parent = card
+        R(box, "BackgroundColor3", "TertiaryBg"); R(box, "TextColor3", "TextPrimary"); R(box, "PlaceholderColor3", "TextDim")
+        MakeCorner(box, 4)
+        local bp = Instance.new("UIPadding"); bp.PaddingLeft = UDim.new(0,8); bp.PaddingRight = UDim.new(0,8); bp.Parent = box
+        local stroke = MakeStroke(box, th().Border, 1)
+        box.Focused:Connect(function() stroke.Color = th().Accent end)
+        local listHolder = MakeFrame({BackgroundTransparency=1, Size=UDim2.new(1,0,0,0), AutomaticSize=Enum.AutomaticSize.Y,
+            LayoutOrder=3, ZIndex=Z+1, Parent=card})
+        local panel, _, listFrame, scroll = makeListPanel(listHolder, 1, false)
+        local pp = panel:FindFirstChildOfClass("UIPadding"); if pp then pp.PaddingLeft = UDim.new(0,0); pp.PaddingRight = UDim.new(0,0); pp.PaddingBottom = UDim.new(0,0) end
+        local status = MakeLabel({Size=UDim2.new(1,0,0,0), AutomaticSize=Enum.AutomaticSize.Y, TextWrapped=true,
+            TextSize=11, Text=o.Status or "", TextXAlignment=Enum.TextXAlignment.Left, LayoutOrder=4, ZIndex=Z+1, Parent=card})
+        R(status, "TextColor3", "TextSecondary")
+        status.Visible = (o.Status or "") ~= ""
+        local CB = {_box = box}
+        local state = {open = false, filtering = false, over = false}
+        local popup = {}
+        local function trim(s) return (s or ""):match("^%s*(.-)%s*$") end
+        local function rebuild()
+            local typed = trim(box.Text)
+            local q = state.filtering and typed:lower() or ""
+            local shown = {}
+            for _, v in ipairs(getItems()) do
+                if q == "" or tostring(v):lower():find(q, 1, true) then table.insert(shown, v) end
+            end
+            local empty = o.EmptyText and o.EmptyText(typed) or (#getItems() == 0 and "Nothing here yet" or "No match")
+            fillList(scroll, listFrame, shown, function(v)
+                local hl = o.Highlight and o.Highlight(v)
+                return {text = tostring(v) .. (hl and "   (current)" or ""), on = function() return hl and true or false end,
+                    click = function() box.Text = tostring(v); CB:Close(); pcall(cb, tostring(v), true) end}
+            end, empty)
+        end
+        function CB:Open()
+            if state.open then return end
+            if o.OnOpen then pcall(o.OnOpen) end
+            state.open, state.filtering = true, false; inlineOpen[popup] = true
+            panel.Visible = true; rebuild()
+            scrollIntoView(card, state)
+        end
+        function CB:Close()
+            if not state.open then return end
+            state.open = false; state.over = false; inlineOpen[popup] = nil
+            panel.Visible = false; stroke.Color = th().Border
+            pcall(function() box:ReleaseFocus() end)
+            scrollBack(state)
+        end
+        popup.close = function() CB:Close() end
+        panel.MouseEnter:Connect(function() state.over = true end)
+        panel.MouseLeave:Connect(function() state.over = false end)
+        box.Focused:Connect(function() CB:Open() end)
+        box:GetPropertyChangedSignal("Text"):Connect(function() if state.open then state.filtering = true; rebuild() end end)
+        box.FocusLost:Connect(function(enter)
+            if not state.over then CB:Close() end
+            stroke.Color = th().Border
+            if enter then pcall(cb, trim(box.Text), false) end
+        end)
+        local conns = {}
+        EC(conns, UserInputService.InputBegan:Connect(function(inp)
+            if not state.open or box:IsFocused() or not IsPress(inp) then return end
+            if not state.over then CB:Close() end
+        end))
+        function CB:Get() return trim(box.Text) end
+        function CB:Set(t) box.Text = tostring(t or "") end
+        function CB:SetStatus(t) status.Text = tostring(t or ""); status.Visible = status.Text ~= "" end
+        function CB:Refresh() if state.open then rebuild() end end
+        function CB:SetItems(i) itemsSrc = i; CB:Refresh() end
+        function CB:SetCallback(f) cb = f end
+        function CB:IsOpen() return state.open end
+        CB._onDestroy = function() CB:Close() end
+        meta(CB, "ComboBox", title or "Combo box", (title or "") .. " " .. (o.Placeholder or ""), o)
+        return finish(row, CB, conns)
     end
 
     -- ── BUTTON ──────────────────────────────────────────
@@ -767,25 +1185,30 @@ AttachElements = function(obj, container, ctx)
         B.SetText = B.Set
         function B:SetDescription(t) if dl then dl.Text = tostring(t) end end
         function B:Fire() cb() end
+        meta(B, "Button", n, n .. " " .. (d or ""), o)
         return finish(row, B, {})
     end
 
     -- ── TOGGLE ──────────────────────────────────────────
+    -- 3.1: Keybind = "F" / KeyCode / true (unbound) adds a key button that flips
+    -- the toggle; KeybindNotify = true/false overrides the window setting.
     function obj:AddToggle(o)
         o = o or {}
         local n = o.Name or "Toggle"; local d = o.Description; local st = o.Default or false
         local flag = o.Flag; local cb = o.Callback or function() end
         local rh = d and 54 or 36
         if flag then NexusLib.Flags[flag] = st end
+        local hasKey = o.Keybind ~= nil and o.Keybind ~= false
+        local rightPad = hasKey and 128 or 66
         local row = newRow(rh)
         local bg = newBg(row, rh-4, true)
         AddHoverScale(bg); AddPressScale(bg); AddGlow(bg, th)
-        local nl = MakeLabel({Size=UDim2.new(1,-66,0,20), Position=UDim2.new(0,10,0,d and 7 or 6),
+        local nl = MakeLabel({Size=UDim2.new(1,-rightPad,0,20), Position=UDim2.new(0,10,0,d and 7 or 6),
             Text=n, TextSize=13, TextXAlignment=Enum.TextXAlignment.Left,
             TextTruncate=Enum.TextTruncate.AtEnd, ZIndex=Z+1, Parent=bg})
         R(nl, "TextColor3", "TextPrimary")
         if d then
-            local dl = MakeLabel({Size=UDim2.new(1,-66,0,16), Position=UDim2.new(0,10,0,27),
+            local dl = MakeLabel({Size=UDim2.new(1,-rightPad,0,16), Position=UDim2.new(0,10,0,27),
                 Text=d, TextSize=11, TextXAlignment=Enum.TextXAlignment.Left,
                 TextTruncate=Enum.TextTruncate.AtEnd, ZIndex=Z+1, Parent=bg})
             R(dl, "TextColor3", "TextDim")
@@ -816,8 +1239,78 @@ AttachElements = function(obj, container, ctx)
         function Tog:Get() return st end
         function Tog:Toggle(fire) SetSt(not st, fire ~= false) end
         function Tog:SetCallback(f) cb = f end
+        Tog._cfgGet = function() return st end
+        Tog._cfgSet = function(v) SetSt(v == true, true) end
+
+        -- inline keybind
+        local conns = {}
+        local key, kbtn, listening = nil, nil, false
+        if hasKey then
+            key = o.Keybind
+            if type(key) == "string" then pcall(function() key = Enum.KeyCode[key] end) end
+            if typeof(key) ~= "EnumItem" then key = nil end
+            kbtn = MakeButton({Size=UDim2.new(0,56,0,20), Position=UDim2.new(1,-108,0.5,-10),
+                Text=key and key.Name or "None", Font=Enum.Font.GothamBold, TextSize=11, ZIndex=Z+3, Parent=bg})
+            R(kbtn, "BackgroundColor3", "TertiaryBg"); MakeCorner(kbtn, 5)
+            kbtn.TextColor3 = th().TextSecondary
+            RF(function() if not listening then kbtn.TextColor3 = th().TextSecondary end end)
+            local KBo = {}
+            local function stop()
+                if not listening then return end
+                listening = false
+                if activeKeybind == KBo then activeKeybind = nil end
+                NexusLib._listening = activeKeybind ~= nil
+                kbtn.Text = key and key.Name or "None"; kbtn.TextColor3 = th().TextSecondary
+            end
+            KBo._cancel = stop
+            kbtn.MouseButton1Click:Connect(function()
+                if listening then stop(); return end
+                if activeKeybind and activeKeybind ~= KBo then pcall(activeKeybind._cancel) end
+                listening = true; activeKeybind = KBo; NexusLib._listening = true
+                kbtn.Text = "..."; kbtn.TextColor3 = th().Accent
+            end)
+            EC(conns, UserInputService.InputBegan:Connect(function(inp, gp)
+                if listening then
+                    if inp.UserInputType == Enum.UserInputType.Keyboard then
+                        local k = inp.KeyCode
+                        if k == Enum.KeyCode.Escape or k == Enum.KeyCode.Backspace then key = nil
+                        elseif not BLOCKED_KEYS[k] then key = k end
+                        stop()
+                    elseif IsPress(inp) then
+                        task.defer(function()
+                            local mp = PointerPos(inp)
+                            local ap, as = kbtn.AbsolutePosition, kbtn.AbsoluteSize
+                            if not (mp.X >= ap.X and mp.X <= ap.X + as.X and mp.Y >= ap.Y and mp.Y <= ap.Y + as.Y) then stop() end
+                        end)
+                    end
+                    return
+                end
+                if NexusLib._listening or gp then return end
+                if inp.UserInputType == Enum.UserInputType.Keyboard and key and inp.KeyCode == key then
+                    SetSt(not st, true)
+                    local show = o.KeybindNotify
+                    if show == nil then show = NexusLib.KeybindNotifications end
+                    if show then notifyToggle(n, st) end
+                end
+            end))
+            Tog._onDestroy = function() stop() end
+        end
+        function Tog:GetKey() return key end
+        function Tog:SetKey(k)
+            if type(k) == "string" then local ok, kk = pcall(function() return Enum.KeyCode[k] end); k = ok and kk or nil end
+            if typeof(k) ~= "EnumItem" then k = nil end
+            key = k
+            if kbtn and not listening then kbtn.Text = key and key.Name or "None" end
+        end
         if flag then NexusLib.Options[flag] = Tog end
-        return finish(row, Tog, {})
+        meta(Tog, "Toggle", n, n .. " " .. (d or ""), o)
+        local E = finish(row, Tog, conns)
+        if hasKey and ctx.win and ctx.win._register and not ctx.noSave and not o.NoSave then
+            ctx.win._register((ctx.path or "?") .. "/" .. n .. " [Key]", {_row = row,
+                _cfgGet = function() return key and key.Name or "None" end,
+                _cfgSet = function(v) Tog:SetKey(v ~= "None" and v or nil) end})
+        end
+        return E
     end
 
     -- ── SLIDER ──────────────────────────────────────────
@@ -836,6 +1329,15 @@ AttachElements = function(obj, container, ctx)
             step = prec > 0 and 10 ^ (-prec) or 1
         end
         local flag = o.Flag; local cb = o.Callback or function() end
+        -- 3.1 AllowOverflow (alias TypeAny): Max is only the drag range; a bigger typed /
+        -- set value stretches the slider instead of being clamped
+        local overflow = o.AllowOverflow or o.TypeAny
+        local baseMax = smax
+        local function fit(v)
+            v = tonumber(v)
+            if overflow and v then smax = math.max(baseMax, v) end
+        end
+        fit(o.Default)
         local function snap(v)
             v = tonumber(v) or smin
             v = math.clamp(v, smin, smax)
@@ -920,15 +1422,18 @@ AttachElements = function(obj, container, ctx)
         end)
         vbox.FocusLost:Connect(function()
             local num = tonumber((vbox.Text:gsub("[^%d%.%-]", "")))
-            if num then setValue(num, true, true) else visuals(false) end
+            if num then fit(num); setValue(num, true, true) else visuals(false) end
             vbox.Text = fmt(val)
         end)
         local Sli = {}
-        function Sli:Set(v) setValue(v, false, true) end
+        function Sli:Set(v) fit(v); setValue(v, false, true) end
         function Sli:Get() return val end
         function Sli:SetCallback(f) cb = f end
-        function Sli:SetRange(a, b) smin, smax = a, b; setValue(val, false, true) end
+        function Sli:SetRange(a, b) smin, smax = a, b; baseMax = b; fit(val); setValue(val, false, true) end
+        Sli._cfgGet = function() return val end
+        Sli._cfgSet = function(v) fit(v); setValue(v, true, true) end
         if flag then NexusLib.Options[flag] = Sli end
+        meta(Sli, "Slider", n, n .. " " .. (o.Description or ""), o)
         return finish(row, Sli, conns)
     end
 
@@ -1027,7 +1532,10 @@ AttachElements = function(obj, container, ctx)
         function KB:SetCallback(f) cb = f end
         function KB:SetReleaseCallback(f) rcb = f end
         KB._onDestroy = function() stop() end
+        KB._cfgGet = function() return cur and cur.Name or "None" end
+        KB._cfgSet = function(v) if v == "None" then KB:Set(nil) else pcall(function() KB:Set(v) end) end end
         if flag then NexusLib.Options[flag] = KB end
+        meta(KB, "Keybind", n, n .. " " .. (o.Description or ""), o)
         return finish(row, KB, conns)
     end
 
@@ -1036,6 +1544,7 @@ AttachElements = function(obj, container, ctx)
     -- Items may be a table or a function returning a table.
     function obj:AddDropdown(o)
         o = o or {}
+        if o.Inline or (o.Inline == nil and ctx.win and ctx.win._inlineDropdowns) then return addInlineDropdown(o) end
         local n = o.Name or "Dropdown"; local itemsSrc = o.Items or {}
         local multi = o.Multi == true
         local flag = o.Flag; local cb = o.Callback or function() end
@@ -1312,7 +1821,10 @@ AttachElements = function(obj, container, ctx)
             if follow then follow:Disconnect() end
             pcall(function() shell:Destroy() end)
         end
+        D._cfgGet = function() return copySel() end
+        D._cfgSet = function(v) D:Set(v); cb(copySel()) end
         if flag then NexusLib.Options[flag] = D end
+        meta(D, "Dropdown", n, n .. " " .. (o.Description or ""), o)
         return finish(row, D, conns)
     end
 
@@ -1330,6 +1842,7 @@ AttachElements = function(obj, container, ctx)
         function L:Set(t) lbl.Text = tostring(t) end
         function L:Get() return lbl.Text end
         function L:SetColor(c) lbl.TextColor3 = c end
+        meta(L, "Label", nil, text or "")
         return finish(row, L, {})
     end
 
@@ -1357,6 +1870,7 @@ AttachElements = function(obj, container, ctx)
         local P = {}
         function P:SetTitle(t) tl.Text = tostring(t) end
         function P:SetBody(t) bl.Text = tostring(t) end
+        meta(P, "Paragraph", o.Title, (o.Title or "") .. " " .. (o.Body or ""))
         return finish(row, P, {})
     end
 
@@ -1422,7 +1936,10 @@ AttachElements = function(obj, container, ctx)
         function Tb:Get() return inp.Text end
         function Tb:SetCallback(f) cb = f end
         function Tb:Focus() inp:CaptureFocus() end
+        Tb._cfgGet = function() return inp.Text end
+        Tb._cfgSet = function(v) Tb:Set(v); cb(inp.Text, false) end
         if flag then NexusLib.Options[flag] = Tb end
+        meta(Tb, "Textbox", n, n .. " " .. (d or "") .. " " .. ph, o)
         return finish(row, Tb, {})
     end
 
@@ -1564,7 +2081,10 @@ AttachElements = function(obj, container, ctx)
         function Cp:Get() return clr end
         function Cp:GetAlpha() return alpha end
         function Cp:SetCallback(f) cb = f end
+        Cp._cfgGet = function() return clr:ToHex() end
+        Cp._cfgSet = function(v) local ok, c = pcall(Color3.fromHex, v); if ok then Cp:Set(c); cb(clr, alpha) end end
         if flag then NexusLib.Options[flag] = Cp end
+        meta(Cp, "ColorPicker", n, n .. " " .. (o.Description or ""), o)
         return finish(row, Cp, conns)
     end
 
@@ -1651,9 +2171,11 @@ function NexusLib._makeAccordion(parentContainer, parentCtx, name, depth)
     end)
     row.Parent = parentContainer
 
-    local Acc = {_row = row, _inner = inner}
+    local Acc = {_row = row, _inner = inner, _sname = name}
     local childCtx = {theme = th, R = R, RF = RF, inset = 0, order = Counter(),
-        depth = depth, isAccordion = true, sepBg = depth == 0 and "Background" or "SecondaryBg"}
+        depth = depth, isAccordion = true, sepBg = depth == 0 and "Background" or "SecondaryBg",
+        win = parentCtx.win, path = parentCtx.path, noSave = parentCtx.noSave}
+    Acc._ctx = childCtx
     AttachElements(Acc, inner, childCtx)
     function Acc:AddAccordion(o)
         return NexusLib._makeAccordion(inner, childCtx, (o and o.Name) or "Group", depth + 1)
@@ -1694,9 +2216,12 @@ function NexusLib:CreateWindow(opts)
     local statusTxt = opts.Status or ""
     local bgUrl     = opts.CustomBackground
     local destroyOnClose = opts.DestroyOnClose ~= false
+    local searchOn = opts.Search == true
+    if opts.KeybindNotifications ~= nil then NexusLib.KeybindNotifications = opts.KeybindNotifications == true end
     local TBAR, SBAR, TABW = 40, 22, 130
 
-    local Win = {_theme = theme, _tabs = {}, _minimized = false, _closeCbs = {}, _conns = {}}
+    local Win = {_theme = theme, _tabs = {}, _minimized = false, _closeCbs = {}, _conns = {},
+        _inlineDropdowns = opts.InlineDropdowns == true}
     local function th() return Win._theme end
     local _refs, _fns = {}, {}
     local function R(obj, prop, key)
@@ -1780,13 +2305,85 @@ function NexusLib:CreateWindow(opts)
     local sidebar = MakeFrame({Name="Sidebar", Size=UDim2.new(0,TABW,1,0), ZIndex=11, Parent=body})
     R(sidebar, "BackgroundColor3", "SecondaryBg")
     if bgImage then sidebar.BackgroundTransparency = 0.12 end
+    -- 3.1: tab buttons live in a ScrollingFrame (many tabs no longer fall off the bottom);
+    -- with Search = true a global search box sits above them
+    local GS_H = searchOn and 40 or 0
+    local tabScroll = Instance.new("ScrollingFrame")
+    tabScroll.Name = "TabScroll"; tabScroll.Size = UDim2.new(1,0,1,-GS_H); tabScroll.Position = UDim2.new(0,0,0,GS_H)
+    tabScroll.BackgroundTransparency = 1; tabScroll.BorderSizePixel = 0; tabScroll.ScrollBarThickness = 3
+    tabScroll.ScrollingDirection = Enum.ScrollingDirection.Y; tabScroll.CanvasSize = UDim2.new()
+    tabScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y; tabScroll.ZIndex = 11; tabScroll.Parent = sidebar
+    R(tabScroll, "ScrollBarImageColor3", "ScrollBar")
+    -- (scripts that patched a scroll frame into the old sidebar look for a child with this
+    -- name and skip their patch when it's there)
+    local compat = Instance.new("Folder"); compat.Name = "BT_TabScroll"; compat.Parent = tabScroll
     local tabLL = Instance.new("UIListLayout"); tabLL.SortOrder = Enum.SortOrder.LayoutOrder
-    tabLL.Padding = UDim.new(0,3); tabLL.Parent = sidebar
-    local tabPd = Instance.new("UIPadding"); tabPd.PaddingTop = UDim.new(0,8)
-    tabPd.PaddingLeft = UDim.new(0,6); tabPd.PaddingRight = UDim.new(0,6); tabPd.Parent = sidebar
+    tabLL.Padding = UDim.new(0,3); tabLL.Parent = tabScroll
+    local tabPd = Instance.new("UIPadding"); tabPd.PaddingTop = UDim.new(0, searchOn and 2 or 8)
+    tabPd.PaddingLeft = UDim.new(0,6); tabPd.PaddingRight = UDim.new(0,6); tabPd.PaddingBottom = UDim.new(0,6); tabPd.Parent = tabScroll
     local pageHolder = MakeFrame({Name="Pages", Size=UDim2.new(1,-TABW,1,0),
         Position=UDim2.new(0,TABW,0,0), BackgroundTransparency=1, ZIndex=10,
         ClipsDescendants=true, Parent=body})
+
+    -- global search box + results panel (over the pages)
+    if searchOn then
+        local gsBox = Instance.new("TextBox")
+        gsBox.Name = "GlobalSearch"; gsBox.Size = UDim2.new(1,-12,0,26); gsBox.Position = UDim2.new(0,6,0,8)
+        gsBox.BorderSizePixel = 0; gsBox.Text = ""; gsBox.PlaceholderText = "Search all..."
+        gsBox.Font = Enum.Font.Gotham; gsBox.TextSize = 12; gsBox.ClearTextOnFocus = false
+        gsBox.TextXAlignment = Enum.TextXAlignment.Left; gsBox.ZIndex = 13; gsBox.Parent = sidebar
+        R(gsBox, "BackgroundColor3", "TertiaryBg"); R(gsBox, "TextColor3", "TextPrimary"); R(gsBox, "PlaceholderColor3", "TextDim")
+        MakeCorner(gsBox, 5)
+        local gp = Instance.new("UIPadding"); gp.PaddingLeft = UDim.new(0,8); gp.PaddingRight = UDim.new(0,8); gp.Parent = gsBox
+        local gStroke = MakeStroke(gsBox, th().Border, 1)
+        gsBox.Focused:Connect(function() gStroke.Color = th().Accent end)
+        gsBox.FocusLost:Connect(function() gStroke.Color = th().Border end)
+        RF(function() if not gsBox:IsFocused() then gStroke.Color = th().Border end end)
+        Win._globalSearch = gsBox
+
+        local panel = MakeFrame({Name="SearchResults", Size=UDim2.fromScale(1,1), Visible=false, ZIndex=40, Parent=pageHolder})
+        R(panel, "BackgroundColor3", "Background")
+        local hdr = MakeLabel({Size=UDim2.new(1,-20,0,26), Position=UDim2.new(0,12,0,6), Font=Enum.Font.GothamBold,
+            TextSize=12, TextXAlignment=Enum.TextXAlignment.Left, Text="Search", ZIndex=41, Parent=panel})
+        R(hdr, "TextColor3", "Accent")
+        local list = Instance.new("ScrollingFrame")
+        list.Size = UDim2.new(1,-16,1,-40); list.Position = UDim2.new(0,8,0,34)
+        list.BackgroundTransparency = 1; list.BorderSizePixel = 0; list.ScrollBarThickness = 3
+        list.AutomaticCanvasSize = Enum.AutomaticSize.Y; list.CanvasSize = UDim2.new(); list.ZIndex = 41; list.Parent = panel
+        R(list, "ScrollBarImageColor3", "ScrollBar")
+        local ll = Instance.new("UIListLayout"); ll.SortOrder = Enum.SortOrder.LayoutOrder; ll.Padding = UDim.new(0,3); ll.Parent = list
+        local MAX = 40
+        local function run()
+            for _, c in ipairs(list:GetChildren()) do if c:IsA("GuiObject") then c:Destroy() end end
+            local q = gsBox.Text
+            if not q:match("%S") then panel.Visible = false; return end
+            panel.Visible = true
+            local res, total = Win:Search(q, MAX)
+            total = total or #res
+            hdr.Text = total == 0 and ('No matches for "' .. q .. '"')
+                or (total > MAX and ("%d matches - showing the best %d"):format(total, MAX) or ("%d match%s - click one to open it"):format(total, total == 1 and "" or "es"))
+            for i, r in ipairs(res) do
+                local t = th()
+                local b = MakeButton({Size=UDim2.new(1,-6,0,30), LayoutOrder=i, BackgroundColor3=t.ElementBg, ZIndex=42, Parent=list})
+                MakeCorner(b, 6)
+                MakeLabel({Size=UDim2.new(1,-20,1,0), Position=UDim2.new(0,10,0,0), TextSize=12, ZIndex=43,
+                    TextXAlignment=Enum.TextXAlignment.Left, TextTruncate=Enum.TextTruncate.AtEnd, RichText=true,
+                    TextColor3=t.TextPrimary, Parent=b,
+                    Text=('<font color="#%s">%s  ›  %s</font>%s'):format(t.TextDim:ToHex(), r.tab._name, r.section,
+                        r.name and ("  ›  " .. r.name) or "")})
+                b.MouseEnter:Connect(function() Tween(b, {BackgroundColor3=th().ElementHover}, 0.1) end)
+                b.MouseLeave:Connect(function() Tween(b, {BackgroundColor3=th().ElementBg}, 0.1) end)
+                b.MouseButton1Click:Connect(function()
+                    gsBox.Text = ""; panel.Visible = false
+                    Win:OpenResult(r)
+                end)
+            end
+        end
+        gsBox:GetPropertyChangedSignal("Text"):Connect(run)
+        NexusLib:AddPopupCloser(function()
+            if gsBox.Text ~= "" or panel.Visible then gsBox.Text = ""; panel.Visible = false; pcall(function() gsBox:ReleaseFocus() end) end
+        end)
+    end
 
     -- Dragging (mouse + touch), kept on-screen
     local dragging, dragStart, startPos, dragInput = false, nil, nil, nil
@@ -1921,6 +2518,240 @@ function NexusLib:CreateWindow(opts)
         for _, tb in ipairs(Win._tabs) do if tb._name == name then tb:Select() return true end end
         return false
     end
+    function Win:SetKeybindNotifications(v) NexusLib.KeybindNotifications = v and true or false end
+
+    -- ════════════════════════════════════════════════════
+    --  CONFIG (3.1): every saveable element registers here as "Tab/Section/Name"
+    -- ════════════════════════════════════════════════════
+    local REG, REG_ORDER = {}, {}
+    function Win._register(path, E)
+        local k, i = path, 2
+        while REG[k] do k = path .. "#" .. i; i = i + 1 end
+        REG[k] = E; table.insert(REG_ORDER, k); E._path = k
+        local function unreg()
+            if REG[k] ~= E then return end
+            REG[k] = nil
+            local idx = table.find(REG_ORDER, k); if idx then table.remove(REG_ORDER, idx) end
+        end
+        if E._unreg then local prev = E._unreg; E._unreg = function() prev(); unreg() end else E._unreg = unreg end
+        return unreg
+    end
+    local function alive(E) return not (E._row and E._row.Parent == nil) end
+    local function same(a, b)
+        if type(a) ~= "table" or type(b) ~= "table" then return a == b end
+        if #a ~= #b then return false end
+        for i = 1, #a do if a[i] ~= b[i] then return false end end
+        return true
+    end
+    function Win:GetConfig()
+        local out = {}
+        for _, k in ipairs(REG_ORDER) do
+            local E = REG[k]
+            if E and alive(E) then
+                local ok, v = pcall(E._cfgGet)
+                if ok and v ~= nil then out[k] = (type(v) == "table") and table.clone(v) or v end
+            end
+        end
+        return out
+    end
+    -- applies saved values in creation order; callbacks only fire for values that change
+    function Win:LoadConfig(t)
+        if type(t) ~= "table" then return 0 end
+        local n = 0
+        for _, k in ipairs(table.clone(REG_ORDER)) do
+            local E, v = REG[k], t[k]
+            if E and v ~= nil and alive(E) then
+                local ok, cur = pcall(E._cfgGet)
+                if not ok or not same(cur, v) then
+                    local ok2, err = pcall(E._cfgSet, v)
+                    if ok2 then n = n + 1 else warn("[NexusLib] LoadConfig " .. k .. ": " .. tostring(err)) end
+                end
+            end
+        end
+        return n
+    end
+    function Win:GetRegistry() return REG, REG_ORDER end
+    local HttpService = game:GetService("HttpService")
+    function Win:ExportConfig(t, metaInfo)
+        local wrap = {nexusConfig = 1, window = winName, meta = metaInfo, data = t or Win:GetConfig()}
+        local ok, txt = pcall(function() return HttpService:JSONEncode(wrap) end)
+        if not ok then return nil, txt end
+        pcall(function() setclipboard(txt) end)
+        return txt
+    end
+    function Win:ImportConfig(text)
+        local ok, t = pcall(function() return HttpService:JSONDecode(text) end)
+        if not ok or type(t) ~= "table" then return nil, "not valid config text" end
+        if t.nexusConfig and type(t.data) == "table" then return t.data, t.meta end
+        return t, nil
+    end
+    local cfgFolder = opts.ConfigFolder or ("NexusLib_" .. tostring(winName):gsub("[^%w_%-]", "_"))
+    local function cfgPath(name) return cfgFolder .. "/" .. tostring(name):gsub("[^%w_%- ]", "_") .. ".json" end
+    function Win:SaveConfig(name)
+        pcall(function() if not isfolder(cfgFolder) then makefolder(cfgFolder) end end)
+        local txt = HttpService:JSONEncode(Win:GetConfig())
+        return pcall(function() writefile(cfgPath(name), txt) end)
+    end
+    function Win:LoadConfigFile(name)
+        local ok, t = pcall(function() return HttpService:JSONDecode(readfile(cfgPath(name))) end)
+        if not ok then return false end
+        Win:LoadConfig(t); return true
+    end
+    function Win:ListConfigs()
+        local out = {}
+        pcall(function()
+            for _, f in ipairs(listfiles(cfgFolder)) do
+                local n = tostring(f):match("([^/\\]+)%.json$"); if n then table.insert(out, n) end
+            end
+        end)
+        table.sort(out)
+        return out
+    end
+    function Win:DeleteConfig(name) return pcall(function() delfile(cfgPath(name)) end) end
+
+    -- ════════════════════════════════════════════════════
+    --  MODULES (3.1): toggles made with Module = true / "Label"
+    -- ════════════════════════════════════════════════════
+    local function eachElement(fn)
+        local function walk(list)
+            for _, E in ipairs(list or {}) do
+                if E._row and E._row.Parent then
+                    fn(E)
+                    if E._ctx then walk(E._ctx.elements) end
+                end
+            end
+        end
+        for _, tb in ipairs(Win._tabs) do
+            for _, s in ipairs(tb._sections or {}) do
+                if s._frame and s._frame.Parent then walk(s._ctx.elements) end
+            end
+        end
+    end
+    Win._eachElement = eachElement
+    function Win:GetActiveModules()
+        local out = {}
+        eachElement(function(E)
+            if E._module and E.Get then
+                local ok, v = pcall(E.Get, E)
+                if ok and v == true then table.insert(out, E._module) end
+            end
+        end)
+        return out
+    end
+    function Win:GetTab(name) for _, tb in ipairs(Win._tabs) do if tb._name == name then return tb end end end
+
+    -- ════════════════════════════════════════════════════
+    --  SEARCH (3.1)
+    -- ════════════════════════════════════════════════════
+    local function words(q)
+        local out = {}
+        for w in string.lower(q or ""):gmatch("%S+") do table.insert(out, w) end
+        return out
+    end
+    local function matches(text, ws)
+        for _, w in ipairs(ws) do if not string.find(text, w, 1, true) then return false end end
+        return true
+    end
+    local hiddenBy = setmetatable({}, {__mode = "k"})   -- only what search hid gets shown again
+    local function hide(o) if o and o.Visible then o.Visible = false; hiddenBy[o] = true end end
+    local function unhide(o) if o and hiddenBy[o] then hiddenBy[o] = nil; o.Visible = true end end
+    local function filterElements(list, ws, force)
+        local hits = 0
+        for _, E in ipairs(list or {}) do
+            local row = E._row
+            if row and row.Parent then
+                if E._ctx then   -- accordion: shown if its name or anything inside matches
+                    local accHit = force or (E._sname and #ws > 0 and matches(string.lower(E._sname), ws))
+                    local sub = filterElements(E._ctx.elements, ws, accHit)
+                    if #ws == 0 or accHit or sub > 0 then
+                        unhide(row)
+                        if #ws > 0 then hits = hits + sub + (accHit and 1 or 0); if sub > 0 and E.Expand then pcall(E.Expand, E) end end
+                    else hide(row) end
+                elseif #ws == 0 or force or (E._stext and matches(E._stext, ws)) then
+                    unhide(row); if #ws > 0 then hits = hits + 1 end
+                else
+                    hide(row)
+                end
+            end
+        end
+        return hits
+    end
+    local function filterTab(tb, q)
+        local ws = words(q)
+        local shownSecs, hits = 0, 0
+        for _, s in ipairs(tb._sections or {}) do
+            local f = s._frame
+            if f and f.Parent and not s._noSearch then
+                local secHit = #ws > 0 and matches(string.lower(s:GetName()), ws)
+                local h = filterElements(s._ctx.elements, ws, secHit)
+                if #ws == 0 or secHit or h > 0 then
+                    unhide(f)
+                    if #ws > 0 then
+                        shownSecs = shownSecs + 1; hits = hits + h
+                        if s:IsCollapsed() then pcall(s.Expand, s) end
+                    end
+                else hide(f) end
+            end
+        end
+        return hits, shownSecs, #ws
+    end
+    Win._filterTab = filterTab
+    local function scrollToRow(tb, row)
+        task.defer(function()
+            local page = tb._page
+            if not (page and row and row.Parent) then return end
+            RunService.Heartbeat:Wait()
+            local y = row.AbsolutePosition.Y - page.AbsolutePosition.Y + page.CanvasPosition.Y - 40
+            Tween(page, {CanvasPosition = Vector2.new(0, math.max(0, y))}, 0.3)
+            if row:IsA("Frame") then
+                local flash = MakeFrame({Size=UDim2.fromScale(1,1), BackgroundColor3=th().Accent, BackgroundTransparency=0.6,
+                    ZIndex=40, Parent=row})
+                MakeCorner(flash, 6)
+                Tween(flash, {BackgroundTransparency=1}, 1.2)
+                task.delay(1.3, function() pcall(function() flash:Destroy() end) end)
+            end
+        end)
+    end
+    -- global search: every tab (NoSearch tabs too), named elements + section titles
+    function Win:Search(q, limit)
+        local ws = words(q)
+        local out = {}
+        if #ws == 0 then return out end
+        for _, tb in ipairs(Win._tabs) do
+            for _, s in ipairs(tb._sections or {}) do
+                if s._frame and s._frame.Parent and not s._noSearch then
+                    if matches(string.lower(s:GetName()), ws) then
+                        table.insert(out, {tab = tb, section = s:GetName(), name = nil, row = s._frame, score = 1})
+                    end
+                    local function walk(list)
+                        for _, E in ipairs(list or {}) do
+                            if E._row and E._row.Parent then
+                                if E._sname and E._stext and matches(E._stext, ws) then
+                                    local nameHit = matches(string.lower(tostring(E._sname)), ws)
+                                    table.insert(out, {tab = tb, section = s:GetName(), name = tostring(E._sname), row = E._row,
+                                        score = nameHit and 0 or 2})
+                                end
+                                if E._ctx then walk(E._ctx.elements) end
+                            end
+                        end
+                    end
+                    walk(s._ctx.elements)
+                end
+            end
+        end
+        table.sort(out, function(a, b) return a.score < b.score end)
+        if limit and #out > limit then
+            local cut = {}; for i = 1, limit do cut[i] = out[i] end
+            return cut, #out
+        end
+        return out, #out
+    end
+    function Win:OpenResult(r)
+        if not r or not r.tab then return end
+        r.tab:Select()
+        if r.tab._searchBox then r.tab._searchBox.Text = r.name or r.section end
+        scrollToRow(r.tab, r.row)
+    end
 
     -- ════════════════════════════════════════════════════
     --  AddTab
@@ -1930,7 +2761,7 @@ function NexusLib:CreateWindow(opts)
         local tName = topts.Name or "Tab"
         local tIcon = topts.Icon
         local tbtn = MakeButton({Name="TBtn_" .. tName, Size=UDim2.new(1,0,0,34),
-            BackgroundTransparency=1, LayoutOrder=#Win._tabs + 1, ZIndex=12, Parent=sidebar})
+            BackgroundTransparency=1, LayoutOrder=#Win._tabs + 1, ZIndex=12, Parent=tabScroll})
         MakeCorner(tbtn, 6)
         local lx = 14
         if tIcon then
@@ -1962,8 +2793,34 @@ function NexusLib:CreateWindow(opts)
         pgPd.PaddingRight = UDim.new(0,10); pgPd.PaddingBottom = UDim.new(0,8); pgPd.Parent = page
         page:GetPropertyChangedSignal("CanvasPosition"):Connect(function() NexusLib:ClosePopups() end)
 
-        local Tab = {_page=page, _wrap=pageWrap, _btn=tbtn, _acBar=acBar, _lbl=tabLbl, _name=tName}
+        local Tab = {_page=page, _wrap=pageWrap, _btn=tbtn, _acBar=acBar, _lbl=tabLbl, _name=tName, _sections={}}
         local order = Counter()
+        function Tab:GetSections() return Tab._sections end
+        -- 3.1 per-tab search bar (window Search = true, tab NoSearch = true skips it)
+        if searchOn and not topts.NoSearch then
+            local bar = MakeFrame({Name="SearchBar", Size=UDim2.new(1,0,0,28), BackgroundTransparency=1,
+                LayoutOrder=-1000000000, ZIndex=12, Parent=page})
+            local sb = Instance.new("TextBox")
+            sb.Size = UDim2.new(1,-86,1,0); sb.BorderSizePixel = 0; sb.Text = ""
+            sb.PlaceholderText = "Search " .. tName .. "..."; sb.Font = Enum.Font.Gotham; sb.TextSize = 12
+            sb.ClearTextOnFocus = false; sb.TextXAlignment = Enum.TextXAlignment.Left; sb.ZIndex = 13; sb.Parent = bar
+            R(sb, "BackgroundColor3", "SecondaryBg"); R(sb, "TextColor3", "TextPrimary"); R(sb, "PlaceholderColor3", "TextDim")
+            MakeCorner(sb, 6)
+            local sp = Instance.new("UIPadding"); sp.PaddingLeft = UDim.new(0,10); sp.PaddingRight = UDim.new(0,8); sp.Parent = sb
+            local sst = MakeStroke(sb, th().Border, 1)
+            sb.Focused:Connect(function() sst.Color = th().Accent end)
+            sb.FocusLost:Connect(function() sst.Color = th().Border end)
+            RF(function() if not sb:IsFocused() then sst.Color = th().Border end end)
+            local info = MakeLabel({Size=UDim2.new(0,80,1,0), Position=UDim2.new(1,-80,0,0), TextSize=11, Text="",
+                TextXAlignment=Enum.TextXAlignment.Right, ZIndex=13, Parent=bar})
+            R(info, "TextColor3", "TextDim")
+            sb:GetPropertyChangedSignal("Text"):Connect(function()
+                local hits, secs, nw = filterTab(Tab, sb.Text)
+                info.Text = nw == 0 and "" or (hits == 0 and secs == 0 and "no matches" or (hits .. " found"))
+            end)
+            Tab._searchBox = sb
+            NexusLib:AddPopupCloser(function() if sb:IsFocused() then sb:ReleaseFocus() end end)
+        end
         local function paint(sel, animate)
             local t = th()
             local d = animate and 0.15 or 0
@@ -2004,7 +2861,7 @@ function NexusLib:CreateWindow(opts)
             local HDR_H = 30
             local CLIP_TOP = HDR_H + 1
             local sec = MakeFrame({Name="S_" .. sName, Size=UDim2.new(1,0,0,HDR_H), ZIndex=12, Parent=page})
-            sec.LayoutOrder = order()
+            sec.LayoutOrder = tonumber(sopts.Order) or order()
             R(sec, "BackgroundColor3", "SecondaryBg"); MakeCorner(sec, 8)
             local hdrBtn = MakeButton({Size=UDim2.new(1,0,0,HDR_H), BackgroundTransparency=1, ZIndex=13, Parent=sec})
             local secHdr = MakeLabel({Size=UDim2.new(1,-40,0,HDR_H), Position=UDim2.new(0,12,0,0),
@@ -2042,9 +2899,13 @@ function NexusLib:CreateWindow(opts)
             hdrBtn.MouseEnter:Connect(function() Tween(chev, {Size=UDim2.fromOffset(16,16)}, 0.1) end)
             hdrBtn.MouseLeave:Connect(function() Tween(chev, {Size=UDim2.fromOffset(14,14)}, 0.1) end)
 
-            local Sec = {_frame=sec, _elems=elems, _header=secHdr}
-            local secCtx = {theme=th, R=R, RF=RF, inset=8, order=Counter(), depth=0, elements={}}
+            local Sec = {_frame=sec, _elems=elems, _header=secHdr, _noSearch=sopts.NoSearch == true}
+            local secCtx = {theme=th, R=R, RF=RF, inset=8, order=Counter(), depth=0, elements={},
+                win=Win, path=tName .. "/" .. sName, noSave=sopts.NoSave == true}
+            Sec._ctx = secCtx
+            table.insert(Tab._sections, Sec)
             AttachElements(Sec, elems, secCtx)
+            function Sec:SetOrder(n) sec.LayoutOrder = tonumber(n) or sec.LayoutOrder end
 
             function Sec:SetName(newName)
                 secHdr.Text = tostring(newName)
@@ -2058,6 +2919,7 @@ function NexusLib:CreateWindow(opts)
             function Sec:SetVisible(v) sec.Visible = v and true or false end
             function Sec:Destroy(instant)
                 for _, el in ipairs(secCtx.elements) do pcall(el._cleanup) end
+                local si = table.find(Tab._sections, Sec); if si then table.remove(Tab._sections, si) end
                 sec.Name = "S__removing"
                 if instant then pcall(function() sec:Destroy() end); return end
                 col.token = col.token + 1
@@ -2108,13 +2970,128 @@ function NexusLib:CreateWindow(opts)
         end
 
         function Tab:AddAccordion(o)
-            return NexusLib._makeAccordion(page, {theme=th, R=R, RF=RF, inset=0, order=order, depth=0},
-                (o and o.Name) or "Group", 0)
+            return NexusLib._makeAccordion(page, {theme=th, R=R, RF=RF, inset=0, order=order, depth=0,
+                win=Win, path=tName}, (o and o.Name) or "Group", 0)
         end
         return Tab
     end
 
     return Win
+end
+
+
+-- ═══════════════════════════════════════════════════════════
+--  MOD LIST (3.1): small draggable overlay listing what's on
+--  opts: Window (uses Win:GetActiveModules) or Provider = fn -> {labels},
+--        Title, TextSize, Position = Vector2 (offset), Visible, Interval,
+--        OnMoved(Vector2) (save the position yourself), Accent (Color3)
+--  Methods: SetVisible, IsVisible, SetTextSize, SetPosition, GetPosition,
+--           SetProvider, SetItems (fixed list), Refresh, Destroy
+--  Longest entries on top; lines up to the right on the right half.
+-- ═══════════════════════════════════════════════════════════
+function NexusLib:CreateModList(opts)
+    opts = opts or {}
+    local ML = {visible = opts.Visible ~= false, size = opts.TextSize or 14, rows = {}}
+    local provider = opts.Provider or (opts.Window and function() return opts.Window:GetActiveModules() end)
+        or function() return {} end
+    local fixed = nil
+    local g = Instance.new("ScreenGui")
+    g.Name = "NexusModList"; g.ResetOnSpawn = false; g.IgnoreGuiInset = true; g.DisplayOrder = 5
+    g.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    local okP = pcall(function() g.Parent = gethui and gethui() or game:GetService("CoreGui") end)
+    if not okP then pcall(function() g.Parent = LocalPlayer:WaitForChild("PlayerGui") end) end
+    local f = MakeFrame({Name="List", BackgroundTransparency=1, AutomaticSize=Enum.AutomaticSize.XY,
+        Size=UDim2.fromOffset(0,0), Parent=g})
+    local pos = opts.Position or Vector2.new(12, 60)
+    f.Position = UDim2.fromOffset(pos.X, pos.Y)
+    local lay = Instance.new("UIListLayout"); lay.SortOrder = Enum.SortOrder.LayoutOrder; lay.Padding = UDim.new(0,1); lay.Parent = f
+    local function accent() return opts.Accent or T().Accent end
+    local h = MakeLabel({Name="Header", LayoutOrder=0, Active=true, AutomaticSize=Enum.AutomaticSize.X,
+        BackgroundTransparency=0.15, Font=Enum.Font.GothamBold, Text=opts.Title or "Modules", Parent=f})
+    h.BackgroundColor3 = Color3.fromRGB(20,22,28)
+    local hp = Instance.new("UIPadding"); hp.PaddingLeft = UDim.new(0,8); hp.PaddingRight = UDim.new(0,8); hp.Parent = h
+    local conns = {}
+    local drag = nil
+    local function clampPos(x, y)
+        local vp = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1920,1080)
+        local sz = f.AbsoluteSize
+        return math.clamp(x, 0, math.max(0, vp.X - sz.X)), math.clamp(y, 0, math.max(0, vp.Y - sz.Y))
+    end
+    h.InputBegan:Connect(function(i)
+        if IsPress(i) then drag = {start = PointerPos(i), pos = Vector2.new(f.Position.X.Offset, f.Position.Y.Offset)} end
+    end)
+    table.insert(conns, AddConn(UserInputService.InputChanged:Connect(function(i)
+        if drag and IsMove(i) then
+            local d = PointerPos(i) - drag.start
+            local x, y = clampPos(drag.pos.X + d.X, drag.pos.Y + d.Y)
+            f.Position = UDim2.fromOffset(x, y)
+        end
+    end)))
+    table.insert(conns, AddConn(UserInputService.InputEnded:Connect(function(i)
+        if drag and IsPress(i) then
+            drag = nil
+            if opts.OnMoved then pcall(opts.OnMoved, Vector2.new(f.Position.X.Offset, f.Position.Y.Offset)) end
+        end
+    end)))
+    local function row(i)
+        local r = ML.rows[i]
+        if r then return r end
+        r = MakeLabel({Name="Row"..i, LayoutOrder=i, AutomaticSize=Enum.AutomaticSize.X, BackgroundTransparency=0.35,
+            Font=Enum.Font.GothamMedium, TextColor3=Color3.fromRGB(235,238,245), Parent=f})
+        r.BackgroundColor3 = Color3.fromRGB(14,15,20)
+        local pad = Instance.new("UIPadding"); pad.PaddingLeft = UDim.new(0,8); pad.PaddingRight = UDim.new(0,8); pad.Parent = r
+        MakeFrame({Name="Bar", Size=UDim2.new(0,2,1,0), Parent=r})
+        ML.rows[i] = r
+        return r
+    end
+    function ML:Refresh()
+        if NexusLib._destroyed then return end
+        g.Enabled = ML.visible
+        if not ML.visible then return end
+        local ok, list = pcall(function() return fixed or provider() end)
+        list = (ok and type(list) == "table") and table.clone(list) or {}
+        table.sort(list, function(a, b) a, b = tostring(a), tostring(b); if #a ~= #b then return #a > #b end; return a < b end)
+        local vpX = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize.X or 1920
+        local right = (f.AbsolutePosition.X + f.AbsoluteSize.X / 2) > vpX / 2
+        lay.HorizontalAlignment = right and Enum.HorizontalAlignment.Right or Enum.HorizontalAlignment.Left
+        local ts = ML.size
+        h.TextSize = ts; h.Size = UDim2.fromOffset(0, ts + 8); h.TextColor3 = accent()
+        h.Text = ("%s  [%d]"):format(opts.Title or "Modules", #list)
+        h.TextXAlignment = right and Enum.TextXAlignment.Right or Enum.TextXAlignment.Left
+        for i, name in ipairs(list) do
+            local l = row(i)
+            l.Visible = true; l.Text = tostring(name); l.TextSize = ts; l.Size = UDim2.fromOffset(0, ts + 6)
+            l.TextXAlignment = right and Enum.TextXAlignment.Right or Enum.TextXAlignment.Left
+            local bar = l:FindFirstChild("Bar")
+            if bar then
+                bar.BackgroundColor3 = accent()
+                bar.AnchorPoint = right and Vector2.new(1,0) or Vector2.new(0,0)
+                bar.Position = right and UDim2.new(1,8,0,0) or UDim2.new(0,-8,0,0)
+            end
+        end
+        for i = #list + 1, #ML.rows do ML.rows[i].Visible = false end
+    end
+    function ML:SetVisible(v) ML.visible = v and true or false; ML:Refresh() end
+    function ML:IsVisible() return ML.visible end
+    function ML:SetTextSize(s) ML.size = tonumber(s) or ML.size; ML:Refresh() end
+    function ML:SetPosition(v) if typeof(v) == "Vector2" then f.Position = UDim2.fromOffset(clampPos(v.X, v.Y)) end end
+    function ML:GetPosition() return Vector2.new(f.Position.X.Offset, f.Position.Y.Offset) end
+    function ML:SetProvider(fn) if type(fn) == "function" then provider = fn; fixed = nil; ML:Refresh() end end
+    function ML:SetItems(list) fixed = list; ML:Refresh() end
+    local alive = true
+    function ML:Destroy()
+        alive = false
+        for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
+        pcall(function() g:Destroy() end)
+    end
+    NexusLib:OnUnload(function() ML:Destroy() end)
+    task.spawn(function()
+        while alive and not NexusLib._destroyed do
+            pcall(ML.Refresh, ML)
+            task.wait(opts.Interval or 0.25)
+        end
+    end)
+    return ML
 end
 
 return NexusLib
