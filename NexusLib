@@ -1,8 +1,13 @@
 -- ============================================================
---  NexusLib v3.1.1  |  Roblox UI Library
+--  NexusLib v3.1.2  |  Roblox UI Library
 --
 --  Drop-in replacement for v3.0 / v2.5: every older call still works.
 --  Everything new is opt-in (window / element options).
+--
+--  3.1.2 FIXES
+--   * Dropdown / combo box rows couldn't be picked in some executors (the
+--     row's click event never arrived). Rows are now picked on press by
+--     hit-testing the pointer (UserInputService), hover the same way.
 --
 --  3.1.1 FIXES
 --   * ComboBox: clicking a row could close the list before the click landed
@@ -105,7 +110,7 @@ local NexusLib       = {}
 NexusLib.Flags       = {}
 NexusLib.Options     = {}
 NexusLib.Connections = {}
-NexusLib.Version     = "3.1.1"
+NexusLib.Version     = "3.1.2"
 NexusLib._listening  = false
 NexusLib._unload     = {}
 NexusLib._destroyed  = false
@@ -865,9 +870,9 @@ AttachElements = function(obj, container, ctx)
         state.targetY, state.page = nil, nil
     end
     -- is the pointer inside a GuiObject right now (bounds check - MouseEnter/Leave are unreliable)
-    local function pointerIn(obj)
+    local function pointerIn(obj, pos)
         if not (obj and obj.Parent and obj.Visible) then return false end
-        local m = UserInputService:GetMouseLocation()
+        local m = pos or UserInputService:GetMouseLocation()
         local a, sz = obj.AbsolutePosition, obj.AbsoluteSize
         return m.X >= a.X and m.X <= a.X + sz.X and m.Y >= a.Y and m.Y <= a.Y + sz.Y
     end
@@ -903,9 +908,13 @@ AttachElements = function(obj, container, ctx)
         return panel, search, listFrame, scroll
     end
     local ROW_H, MAX_ROWS = 24, 7
-    -- fills `scroll` with item rows. rowFn(item) -> {text=, on=, click=fn}
+    -- fills `scroll` with item rows. rowFn(item) -> {text=, on=, click=fn}. Returns the rows.
+    -- Rows are NOT picked through MouseButton1Click: in some executors / with a focused TextBox that
+    -- event never reached the row, so nothing could be selected. listPress / listHover below hit-test
+    -- the pointer against the rows from UserInputService instead (same input the close check uses).
     local function fillList(scroll, listFrame, items, rowFn, emptyText)
         for _, c in ipairs(scroll:GetChildren()) do if c:IsA("GuiObject") then c:Destroy() end end
+        local rows = {}
         local t = th()
         if #items == 0 then
             MakeLabel({Size=UDim2.new(1,-6,0,ROW_H), TextSize=12, TextXAlignment=Enum.TextXAlignment.Left,
@@ -928,11 +937,37 @@ AttachElements = function(obj, container, ctx)
                 mark.Visible = on
             end
             paintRow()
-            b.MouseEnter:Connect(function() if not (info.on and info.on()) then b.BackgroundColor3 = th().ElementHover end end)
-            b.MouseLeave:Connect(paintRow)
-            b.MouseButton1Click:Connect(function() info.click(); paintRow() end)
+            table.insert(rows, {b = b, info = info, paint = paintRow, hover = false})
         end
         listFrame.Size = UDim2.new(1,0,0, math.min(math.max(#items,1), MAX_ROWS) * (ROW_H + 2) + 8)
+        return rows
+    end
+    local function rowAt(rows, scroll, pos)
+        if not (rows and pointerIn(scroll, pos)) then return nil end   -- rows scrolled out of view don't count
+        for _, r in ipairs(rows) do if pointerIn(r.b, pos) then return r end end
+        return nil
+    end
+    -- a press on a row picks it (returns true when it did)
+    local function listPress(st, scroll, inp)
+        local r = rowAt(st.rows, scroll, PointerPos(inp))
+        if not r then return false end
+        task.spawn(function() pcall(r.info.click); if r.b.Parent then r.paint() end end)
+        return true
+    end
+    local function listHover(st, scroll)
+        if not st.rows then return end
+        local r = rowAt(st.rows, scroll)
+        for _, x in ipairs(st.rows) do
+            local want = (x == r)
+            if want ~= x.hover then
+                x.hover = want
+                if not x.b.Parent then continue end
+                if want and not (x.info.on and x.info.on()) then x.b.BackgroundColor3 = th().ElementHover else x.paint() end
+            end
+        end
+    end
+    local function isMove(inp)
+        return inp.UserInputType == Enum.UserInputType.MouseMovement or inp.UserInputType == Enum.UserInputType.Touch
     end
 
     -- ── INLINE DROPDOWN (Dropdown{Inline = true} / window InlineDropdowns) ──
@@ -997,7 +1032,7 @@ AttachElements = function(obj, container, ctx)
             for _, v in ipairs(getItems()) do
                 if q == "" or tostring(v):lower():find(q, 1, true) then table.insert(shown, v) end
             end
-            fillList(scroll, listFrame, shown, function(v)
+            state.rows = fillList(scroll, listFrame, shown, function(v)
                 return {text = tostring(v), on = function() return isSel(v) end, click = function()
                     if multi then
                         local k = table.find(selected, v)
@@ -1035,9 +1070,13 @@ AttachElements = function(obj, container, ctx)
         header.MouseButton1Click:Connect(function() if state.open then D:Close() else D:Open() end end)
         EC(conns, UserInputService.InputBegan:Connect(function(inp)
             if not state.open or not IsPress(inp) then return end
+            if listPress(state, scroll, inp) then return end
             local p = PointerPos(inp)
             local a, sz = card.AbsolutePosition, card.AbsoluteSize
             if p.X < a.X or p.X > a.X + sz.X or p.Y < a.Y or p.Y > a.Y + sz.Y then D:Close() end
+        end))
+        EC(conns, UserInputService.InputChanged:Connect(function(inp)
+            if state.open and isMove(inp) then listHover(state, scroll) end
         end))
         function D:IsOpen() return state.open end
         function D:Get() return copySel() end
@@ -1131,7 +1170,7 @@ AttachElements = function(obj, container, ctx)
                 if q == "" or tostring(v):lower():find(q, 1, true) then table.insert(shown, v) end
             end
             local empty = o.EmptyText and o.EmptyText(typed) or (#getItems() == 0 and "Nothing here yet" or "No match")
-            fillList(scroll, listFrame, shown, function(v)
+            state.rows = fillList(scroll, listFrame, shown, function(v)
                 local hl = o.Highlight and o.Highlight(v)
                 local shownText = o.Format and o.Format(v) or (tostring(v) .. (hl and "   (current)" or ""))
                 return {text = tostring(shownText), on = function() return hl and true or false end,
@@ -1168,8 +1207,14 @@ AttachElements = function(obj, container, ctx)
         end)
         local conns = {}
         EC(conns, UserInputService.InputBegan:Connect(function(inp)
-            if not state.open or box:IsFocused() or not IsPress(inp) then return end
-            if not pointerIn(listFrame) and not pointerIn(box) then CB:Close() end
+            if not state.open or not IsPress(inp) then return end
+            if listPress(state, scroll, inp) then return end
+            if box:IsFocused() then return end
+            local p = PointerPos(inp)
+            if not pointerIn(listFrame, p) and not pointerIn(box, p) then CB:Close() end
+        end))
+        EC(conns, UserInputService.InputChanged:Connect(function(inp)
+            if state.open and isMove(inp) then listHover(state, scroll) end
         end))
         function CB:Get() return trim(box.Text) end
         function CB:Set(t) box.Text = tostring(t or "") end
