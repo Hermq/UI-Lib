@@ -1,8 +1,18 @@
 -- ============================================================
---  NexusLib v3.1  |  Roblox UI Library
+--  NexusLib v3.1.1  |  Roblox UI Library
 --
 --  Drop-in replacement for v3.0 / v2.5: every older call still works.
 --  Everything new is opt-in (window / element options).
+--
+--  3.1.1 FIXES
+--   * ComboBox: clicking a row could close the list before the click landed
+--     (it relied on MouseEnter/MouseLeave, which Roblox doesn't fire
+--     reliably) - now checks whether the pointer is over the list.
+--   * Picking a ComboBox row no longer rebuilds the list mid-click.
+--   * Global search results covered the pages (blocking every dropdown /
+--     button) until the box was emptied by hand - picking a tab clears them.
+--   * Opening a second inline list while one was open made both scroll the
+--     page at once (jumpy); only the last one scrolls back now.
 --
 --  NEW IN 3.1
 --   * Search (CreateWindow{Search = true}):
@@ -95,7 +105,7 @@ local NexusLib       = {}
 NexusLib.Flags       = {}
 NexusLib.Options     = {}
 NexusLib.Connections = {}
-NexusLib.Version     = "3.1"
+NexusLib.Version     = "3.1.1"
 NexusLib._listening  = false
 NexusLib._unload     = {}
 NexusLib._destroyed  = false
@@ -548,6 +558,7 @@ end
 -- Inline lists (dropdowns / combo boxes) are not floating popups (scrolling
 -- the page must not close them), so they register here instead.
 local inlineOpen = {}
+local scrollOwner = nil   -- the inline list that last scrolled its page (only it may scroll back)
 local customClosers = {}
 function NexusLib:AddPopupCloser(fn) if type(fn) == "function" then table.insert(customClosers, fn) end end
 function NexusLib:CloseAll()
@@ -830,9 +841,10 @@ AttachElements = function(obj, container, ctx)
         local page = pageOf(card)
         if not page then return end
         state.page, state.prevY = page, page.CanvasPosition.Y
+        scrollOwner = state
         task.spawn(function()
             RunService.Heartbeat:Wait(); RunService.Heartbeat:Wait()   -- let the layout grow first
-            if not state.open or not page.Parent then return end
+            if not state.open or not page.Parent or scrollOwner ~= state then return end
             local bottom = card.AbsolutePosition.Y + card.AbsoluteSize.Y
             local viewBottom = page.AbsolutePosition.Y + page.AbsoluteWindowSize.Y
             local over = bottom - viewBottom + 8
@@ -843,11 +855,21 @@ AttachElements = function(obj, container, ctx)
         end)
     end
     local function scrollBack(state)
-        if state.targetY and state.page and state.page.Parent
+        -- only the list that scrolled the page last scrolls it back (opening another list while one is
+        -- open would otherwise make two tweens fight over the page position)
+        if scrollOwner == state and state.targetY and state.page and state.page.Parent
             and math.abs(state.page.CanvasPosition.Y - state.targetY) < 6 then
             Tween(state.page, {CanvasPosition = Vector2.new(state.page.CanvasPosition.X, state.prevY)}, 0.3)
         end
+        if scrollOwner == state then scrollOwner = nil end
         state.targetY, state.page = nil, nil
+    end
+    -- is the pointer inside a GuiObject right now (bounds check - MouseEnter/Leave are unreliable)
+    local function pointerIn(obj)
+        if not (obj and obj.Parent and obj.Visible) then return false end
+        local m = UserInputService:GetMouseLocation()
+        local a, sz = obj.AbsolutePosition, obj.AbsoluteSize
+        return m.X >= a.X and m.X <= a.X + sz.X and m.Y >= a.Y and m.Y <= a.Y + sz.Y
     end
     local function makeListPanel(parent, order, withSearch)
         local t = th()
@@ -1052,7 +1074,8 @@ AttachElements = function(obj, container, ctx)
     -- ── COMBO BOX (type a name or pick one from the list) ──
     -- o: Name/Title, Placeholder, Items (table or fn), Default, Callback(text, picked),
     --    Highlight(item) -> bool (marked), OnOpen() (before the list opens),
-    --    EmptyText(typed) -> string, Status (initial status line text).
+    --    EmptyText(typed) -> string, Status (initial status line text),
+    --    Format(item) -> display text (picking still puts the item itself in the box).
     function obj:AddComboBox(o)
         o = o or {}
         local itemsSrc = o.Items or {}
@@ -1097,7 +1120,7 @@ AttachElements = function(obj, container, ctx)
         R(status, "TextColor3", "TextSecondary")
         status.Visible = (o.Status or "") ~= ""
         local CB = {_box = box}
-        local state = {open = false, filtering = false, over = false}
+        local state = {open = false, filtering = false, picking = false}
         local popup = {}
         local function trim(s) return (s or ""):match("^%s*(.-)%s*$") end
         local function rebuild()
@@ -1110,8 +1133,12 @@ AttachElements = function(obj, container, ctx)
             local empty = o.EmptyText and o.EmptyText(typed) or (#getItems() == 0 and "Nothing here yet" or "No match")
             fillList(scroll, listFrame, shown, function(v)
                 local hl = o.Highlight and o.Highlight(v)
-                return {text = tostring(v) .. (hl and "   (current)" or ""), on = function() return hl and true or false end,
-                    click = function() box.Text = tostring(v); CB:Close(); pcall(cb, tostring(v), true) end}
+                local shownText = o.Format and o.Format(v) or (tostring(v) .. (hl and "   (current)" or ""))
+                return {text = tostring(shownText), on = function() return hl and true or false end,
+                    click = function()
+                        state.picking = true; box.Text = tostring(v); state.picking = false
+                        CB:Close(); pcall(cb, tostring(v), true)
+                    end}
             end, empty)
         end
         function CB:Open()
@@ -1123,29 +1150,33 @@ AttachElements = function(obj, container, ctx)
         end
         function CB:Close()
             if not state.open then return end
-            state.open = false; state.over = false; inlineOpen[popup] = nil
+            state.open = false; inlineOpen[popup] = nil
             panel.Visible = false; stroke.Color = th().Border
             pcall(function() box:ReleaseFocus() end)
             scrollBack(state)
         end
         popup.close = function() CB:Close() end
-        panel.MouseEnter:Connect(function() state.over = true end)
-        panel.MouseLeave:Connect(function() state.over = false end)
         box.Focused:Connect(function() CB:Open() end)
-        box:GetPropertyChangedSignal("Text"):Connect(function() if state.open then state.filtering = true; rebuild() end end)
+        box:GetPropertyChangedSignal("Text"):Connect(function()
+            if state.open and not state.picking then state.filtering = true; rebuild() end
+        end)
         box.FocusLost:Connect(function(enter)
-            if not state.over then CB:Close() end
+            -- clicking a row takes focus away first: keep the list open for that click
+            if enter or not pointerIn(listFrame) then CB:Close() end
             stroke.Color = th().Border
             if enter then pcall(cb, trim(box.Text), false) end
         end)
         local conns = {}
         EC(conns, UserInputService.InputBegan:Connect(function(inp)
             if not state.open or box:IsFocused() or not IsPress(inp) then return end
-            if not state.over then CB:Close() end
+            if not pointerIn(listFrame) and not pointerIn(box) then CB:Close() end
         end))
         function CB:Get() return trim(box.Text) end
         function CB:Set(t) box.Text = tostring(t or "") end
-        function CB:SetStatus(t) status.Text = tostring(t or ""); status.Visible = status.Text ~= "" end
+        function CB:SetStatus(t, color)
+            status.Text = tostring(t or ""); status.Visible = status.Text ~= ""
+            status.TextColor3 = color or th().TextSecondary
+        end
         function CB:Refresh() if state.open then rebuild() end end
         function CB:SetItems(i) itemsSrc = i; CB:Refresh() end
         function CB:SetCallback(f) cb = f end
@@ -2380,6 +2411,12 @@ function NexusLib:CreateWindow(opts)
             end
         end
         gsBox:GetPropertyChangedSignal("Text"):Connect(run)
+        -- the results cover the pages: clear them whenever a tab is picked (else they'd block every
+        -- dropdown / button underneath until the search box is emptied by hand)
+        Win._clearGlobalSearch = function()
+            if gsBox.Text ~= "" then gsBox.Text = "" end
+            panel.Visible = false
+        end
         NexusLib:AddPopupCloser(function()
             if gsBox.Text ~= "" or panel.Visible then gsBox.Text = ""; panel.Visible = false; pcall(function() gsBox:ReleaseFocus() end) end
         end)
@@ -2832,6 +2869,7 @@ function NexusLib:CreateWindow(opts)
         Tab._paint = function() paint(Win._selected == Tab, false) end
         paint(false, false)
         function Tab:Select()
+            if Win._clearGlobalSearch then pcall(Win._clearGlobalSearch) end
             if Win._selected == Tab then return end
             NexusLib:ClosePopups()
             for _, t in ipairs(Win._tabs) do
