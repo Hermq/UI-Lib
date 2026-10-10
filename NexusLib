@@ -1,10 +1,22 @@
 -- ============================================================
---  NexusLib v3.1.2  |  Roblox UI Library
+--  NexusLib v3.1.3  |  Roblox UI Library
 --
 --  Drop-in replacement for v3.0 / v2.5: every older call still works.
 --  Everything new is opt-in (window / element options).
 --
---  3.1.2 FIXES
+--  3.1.3 FIXES
+--   * The real dropdown / combo box bug: the pointer position (GetMouseLocation,
+--     top bar included) and the window's AbsolutePosition were in different
+--     spaces when the ScreenGui didn't actually ignore the top-bar inset, so
+--     "is the click inside the list?" was ~58 px off: lists closed before a
+--     row's click landed (3.1.0-3.1.1) or picked the wrong row / closed at
+--     once (3.1.2). Lists no longer use coordinates at all: each part of a
+--     list reports presses through its own InputBegan (engine hit test), and
+--     an outside press only closes it a frame later if nothing inside was hit.
+--     Rows pick on press (click as a fallback); hover is MouseEnter/Leave.
+--   * PointerPos (keybind cancel, floating dropdowns) corrects for the inset.
+--
+--  3.1.2 (superseded by 3.1.3)
 --   * Dropdown / combo box rows couldn't be picked in some executors (the
 --     row's click event never arrived). Rows are now picked on press by
 --     hit-testing the pointer (UserInputService), hover the same way.
@@ -110,7 +122,7 @@ local NexusLib       = {}
 NexusLib.Flags       = {}
 NexusLib.Options     = {}
 NexusLib.Connections = {}
-NexusLib.Version     = "3.1.2"
+NexusLib.Version     = "3.1.3"
 NexusLib._listening  = false
 NexusLib._unload     = {}
 NexusLib._destroyed  = false
@@ -151,11 +163,28 @@ local function IsMove(i)
     return i.UserInputType == Enum.UserInputType.MouseMovement
         or i.UserInputType == Enum.UserInputType.Touch
 end
+-- Pointer position in the same space as the window's AbsolutePosition. GetMouseLocation includes the
+-- top bar; the window's coordinates only do if the ScreenGui really ignores the inset (not always the
+-- case inside executor containers) - the gap between the viewport and the ScreenGui's size says which.
 local function PointerPos(i)
+    local inset = Vector2.new(0, 0)
+    pcall(function() inset = game:GetService("GuiService"):GetGuiInset() end)
+    local screen
     if i and i.UserInputType == Enum.UserInputType.Touch then
-        return Vector2.new(i.Position.X, i.Position.Y)
+        screen = Vector2.new(i.Position.X, i.Position.Y) + inset   -- touch positions exclude the inset
+    else
+        screen = UserInputService:GetMouseLocation()
     end
-    return UserInputService:GetMouseLocation()
+    local g = NexusLib._rootGui
+    local offY = 0
+    pcall(function()
+        local cam = workspace.CurrentCamera
+        if g and g.Parent and cam then
+            local gap = cam.ViewportSize.Y - g.AbsoluteSize.Y
+            if gap > 1 and gap < 120 then offY = gap end
+        end
+    end)
+    return Vector2.new(screen.X, screen.Y - offY)
 end
 
 -- ── Instance helpers ──────────────────────────────────────
@@ -495,6 +524,7 @@ local gui = Instance.new("ScreenGui")
 gui.Name = "NexusLib"; gui.ResetOnSpawn = false
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.IgnoreGuiInset = true; gui.DisplayOrder = 999
+NexusLib._rootGui = gui
 
 do
     local parented = false
@@ -869,13 +899,6 @@ AttachElements = function(obj, container, ctx)
         if scrollOwner == state then scrollOwner = nil end
         state.targetY, state.page = nil, nil
     end
-    -- is the pointer inside a GuiObject right now (bounds check - MouseEnter/Leave are unreliable)
-    local function pointerIn(obj, pos)
-        if not (obj and obj.Parent and obj.Visible) then return false end
-        local m = pos or UserInputService:GetMouseLocation()
-        local a, sz = obj.AbsolutePosition, obj.AbsoluteSize
-        return m.X >= a.X and m.X <= a.X + sz.X and m.Y >= a.Y and m.Y <= a.Y + sz.Y
-    end
     local function makeListPanel(parent, order, withSearch)
         local t = th()
         local panel = MakeFrame({BackgroundTransparency=1, Visible=false, Size=UDim2.new(1,0,0,0),
@@ -908,13 +931,29 @@ AttachElements = function(obj, container, ctx)
         return panel, search, listFrame, scroll
     end
     local ROW_H, MAX_ROWS = 24, 7
-    -- fills `scroll` with item rows. rowFn(item) -> {text=, on=, click=fn}. Returns the rows.
-    -- Rows are NOT picked through MouseButton1Click: in some executors / with a focused TextBox that
-    -- event never reached the row, so nothing could be selected. listPress / listHover below hit-test
-    -- the pointer against the rows from UserInputService instead (same input the close check uses).
-    local function fillList(scroll, listFrame, items, rowFn, emptyText)
+    -- ── "was this press inside the list?" without pointer coordinates ──
+    -- The pointer position and the GUI's AbsolutePosition can be in different spaces (top bar inset:
+    -- ~58 px off in some executors/containers), which made 3.1.0-3.1.2 close lists before a row's click
+    -- landed or hit the wrong row. Now the engine decides: every part of a list marks the press via its
+    -- own GuiObject.InputBegan, and an outside-press close only happens a frame later if nothing inside
+    -- was pressed.
+    local function markInside(state, obj)
+        if not (obj and obj:IsA("GuiObject")) then return end
+        obj.InputBegan:Connect(function(inp) if IsPress(inp) then state.touchT = os.clock() end end)
+    end
+    local function closeUnlessInside(state, closeFn)
+        local t0 = os.clock()
+        task.spawn(function()
+            RunService.Heartbeat:Wait()
+            if not state.open then return end
+            if state.touchT and state.touchT > t0 - 0.05 then return end   -- the press was inside
+            closeFn()
+        end)
+    end
+    -- fills `scroll` with item rows. rowFn(item) -> {text=, on=, click=fn}
+    -- A row is picked on press (its own InputBegan = engine hit test), with MouseButton1Click as a fallback.
+    local function fillList(state, scroll, listFrame, items, rowFn, emptyText)
         for _, c in ipairs(scroll:GetChildren()) do if c:IsA("GuiObject") then c:Destroy() end end
-        local rows = {}
         local t = th()
         if #items == 0 then
             MakeLabel({Size=UDim2.new(1,-6,0,ROW_H), TextSize=12, TextXAlignment=Enum.TextXAlignment.Left,
@@ -930,6 +969,7 @@ AttachElements = function(obj, container, ctx)
             local mark = Icons.Check(b, Color3.new(1,1,1), Z+5)
             mark.AnchorPoint = Vector2.new(0.5,0.5); mark.Position = UDim2.new(1,-12,0.5,0)
             local function paintRow()
+                if not b.Parent then return end
                 local on = info.on and info.on() or false
                 local th2 = th()
                 b.BackgroundColor3 = on and th2.Accent or th2.ElementBg
@@ -937,37 +977,21 @@ AttachElements = function(obj, container, ctx)
                 mark.Visible = on
             end
             paintRow()
-            table.insert(rows, {b = b, info = info, paint = paintRow, hover = false})
+            local pickedAt = -1
+            local function pick()
+                if os.clock() - pickedAt < 0.4 then return end   -- press + click of the same tap = one pick
+                pickedAt = os.clock()
+                state.touchT = os.clock()
+                local ok, err = pcall(info.click)
+                if not ok then warn("[NexusLib] list pick: " .. tostring(err)) end
+                paintRow()
+            end
+            b.InputBegan:Connect(function(inp) if IsPress(inp) then state.touchT = os.clock(); pick() end end)
+            b.MouseButton1Click:Connect(pick)
+            b.MouseEnter:Connect(function() if not (info.on and info.on()) then b.BackgroundColor3 = th().ElementHover end end)
+            b.MouseLeave:Connect(paintRow)
         end
         listFrame.Size = UDim2.new(1,0,0, math.min(math.max(#items,1), MAX_ROWS) * (ROW_H + 2) + 8)
-        return rows
-    end
-    local function rowAt(rows, scroll, pos)
-        if not (rows and pointerIn(scroll, pos)) then return nil end   -- rows scrolled out of view don't count
-        for _, r in ipairs(rows) do if pointerIn(r.b, pos) then return r end end
-        return nil
-    end
-    -- a press on a row picks it (returns true when it did)
-    local function listPress(st, scroll, inp)
-        local r = rowAt(st.rows, scroll, PointerPos(inp))
-        if not r then return false end
-        task.spawn(function() pcall(r.info.click); if r.b.Parent then r.paint() end end)
-        return true
-    end
-    local function listHover(st, scroll)
-        if not st.rows then return end
-        local r = rowAt(st.rows, scroll)
-        for _, x in ipairs(st.rows) do
-            local want = (x == r)
-            if want ~= x.hover then
-                x.hover = want
-                if not x.b.Parent then continue end
-                if want and not (x.info.on and x.info.on()) then x.b.BackgroundColor3 = th().ElementHover else x.paint() end
-            end
-        end
-    end
-    local function isMove(inp)
-        return inp.UserInputType == Enum.UserInputType.MouseMovement or inp.UserInputType == Enum.UserInputType.Touch
     end
 
     -- ── INLINE DROPDOWN (Dropdown{Inline = true} / window InlineDropdowns) ──
@@ -1032,7 +1056,7 @@ AttachElements = function(obj, container, ctx)
             for _, v in ipairs(getItems()) do
                 if q == "" or tostring(v):lower():find(q, 1, true) then table.insert(shown, v) end
             end
-            state.rows = fillList(scroll, listFrame, shown, function(v)
+            fillList(state, scroll, listFrame, shown, function(v)
                 return {text = tostring(v), on = function() return isSel(v) end, click = function()
                     if multi then
                         local k = table.find(selected, v)
@@ -1068,15 +1092,9 @@ AttachElements = function(obj, container, ctx)
         end
         popup.close = function() D:Close() end
         header.MouseButton1Click:Connect(function() if state.open then D:Close() else D:Open() end end)
+        for _, x in ipairs({card, header, box, panel, listFrame, scroll, search}) do markInside(state, x) end
         EC(conns, UserInputService.InputBegan:Connect(function(inp)
-            if not state.open or not IsPress(inp) then return end
-            if listPress(state, scroll, inp) then return end
-            local p = PointerPos(inp)
-            local a, sz = card.AbsolutePosition, card.AbsoluteSize
-            if p.X < a.X or p.X > a.X + sz.X or p.Y < a.Y or p.Y > a.Y + sz.Y then D:Close() end
-        end))
-        EC(conns, UserInputService.InputChanged:Connect(function(inp)
-            if state.open and isMove(inp) then listHover(state, scroll) end
+            if state.open and IsPress(inp) then closeUnlessInside(state, function() D:Close() end) end
         end))
         function D:IsOpen() return state.open end
         function D:Get() return copySel() end
@@ -1170,7 +1188,7 @@ AttachElements = function(obj, container, ctx)
                 if q == "" or tostring(v):lower():find(q, 1, true) then table.insert(shown, v) end
             end
             local empty = o.EmptyText and o.EmptyText(typed) or (#getItems() == 0 and "Nothing here yet" or "No match")
-            state.rows = fillList(scroll, listFrame, shown, function(v)
+            fillList(state, scroll, listFrame, shown, function(v)
                 local hl = o.Highlight and o.Highlight(v)
                 local shownText = o.Format and o.Format(v) or (tostring(v) .. (hl and "   (current)" or ""))
                 return {text = tostring(shownText), on = function() return hl and true or false end,
@@ -1200,21 +1218,17 @@ AttachElements = function(obj, container, ctx)
             if state.open and not state.picking then state.filtering = true; rebuild() end
         end)
         box.FocusLost:Connect(function(enter)
-            -- clicking a row takes focus away first: keep the list open for that click
-            if enter or not pointerIn(listFrame) then CB:Close() end
+            -- clicking a row takes focus away first: the list stays open for that press (decided a frame later)
+            if enter then CB:Close() else closeUnlessInside(state, function() CB:Close() end) end
             stroke.Color = th().Border
             if enter then pcall(cb, trim(box.Text), false) end
         end)
         local conns = {}
+        for _, x in ipairs({card, box, listHolder, panel, listFrame, scroll}) do markInside(state, x) end
         EC(conns, UserInputService.InputBegan:Connect(function(inp)
-            if not state.open or not IsPress(inp) then return end
-            if listPress(state, scroll, inp) then return end
-            if box:IsFocused() then return end
-            local p = PointerPos(inp)
-            if not pointerIn(listFrame, p) and not pointerIn(box, p) then CB:Close() end
-        end))
-        EC(conns, UserInputService.InputChanged:Connect(function(inp)
-            if state.open and isMove(inp) then listHover(state, scroll) end
+            if state.open and IsPress(inp) and not box:IsFocused() then
+                closeUnlessInside(state, function() CB:Close() end)
+            end
         end))
         function CB:Get() return trim(box.Text) end
         function CB:Set(t) box.Text = tostring(t or "") end
